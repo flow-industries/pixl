@@ -1,0 +1,13 @@
+[package]
+name = "pixl-gen"
+description = "Local diffusion image generation backend (SDXL + LoRA on candle/Metal). Trait-decoupled from the CLI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+thiserror.workspace = true
+
+# candle + Metal land in M2; kept out of M0/M1 so the testable core builds GPU-free.

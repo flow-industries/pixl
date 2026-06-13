@@ -1,0 +1,18 @@
+[package]
+name = "pixl"
+description = "Local pixel-art generator for Apple Silicon: SDXL + pixel-art LoRA, snapped to true pixel art."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pixl"
+path = "src/main.rs"
+
+[dependencies]
+pixl-pixelize.workspace = true
+pixl-gen.workspace = true
+image.workspace = true
+clap.workspace = true
+anyhow.workspace = true

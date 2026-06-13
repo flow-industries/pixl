@@ -1,0 +1,15 @@
+[package]
+name = "pixl-pixelize"
+description = "Detect the true grid of an AI-generated pixel-art image and snap it to a clean, limited-palette sprite."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# deterministic, dependency-free PRNG for synthetic golden fixtures (see tests/golden.rs)

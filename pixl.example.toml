@@ -1,0 +1,12 @@
+# pixl configuration (optional). Copy to `pixl.toml` in the working directory
+# or your config dir. CLI flags override these; these override built-in defaults.
+
+[generate]
+steps = 8
+cfg = 1.0          # 1.0 for the SDXL-Lightning path (CFG-distilled)
+size = "1024x1024"
+
+[pixelize]
+colors = 16        # palette size; 0 = keep all distinct cell colors
+target_cells = 128 # fallback logical long-edge when grid detection is weak
+# pixel_size = 8   # uncomment to force a cell size and skip detection

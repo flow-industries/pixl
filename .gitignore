@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+.DS_Store
+# Local model cache / generated output during manual runs
+/out
+/.pixl-cache
+/.claude
