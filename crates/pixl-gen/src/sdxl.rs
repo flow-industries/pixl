@@ -72,12 +72,18 @@ pub struct CandleSdxlGenerator {
 }
 
 impl CandleSdxlGenerator {
-    pub fn load(model: BaseModel, width: u32, height: u32, loras: &[LoraRef]) -> Result<Self> {
+    pub fn load(
+        model: BaseModel,
+        width: u32,
+        height: u32,
+        loras: &[LoraRef],
+    ) -> Result<(Self, crate::LoadReport)> {
         let device = crate::device::select(0).map_err(|e| anyhow!("device: {e}"))?;
         let dtype = DType::F16;
         let (w, h) = (width as usize, height as usize);
         let cfg = model.config(w, h);
         let repo = model.repo();
+        let weights_cached = crate::hf_model_cached(repo);
 
         let api = ApiBuilder::new()
             .with_progress(true)
@@ -101,15 +107,14 @@ impl CandleSdxlGenerator {
         let tok2_p = pull("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json")?;
 
         let vae = cfg.build_vae(&vae_w, &device, dtype).context("build vae")?;
-        let unet_file = if loras.is_empty() {
-            unet_w
+        let (unet_file, merge) = if loras.is_empty() {
+            (unet_w, crate::MergeState::None)
         } else {
             let mut specs = Vec::with_capacity(loras.len());
             for l in loras {
                 specs.push((pull(&l.repo, &l.file)?, l.scale));
             }
-            let cache = crate::merged_cache_dir();
-            crate::lora::merged_unet_path(&unet_w, &specs, &cache)
+            crate::lora::merged_unet_path(&unet_w, &specs, &crate::merged_cache_dir())
                 .map_err(|e| anyhow!("lora merge: {e}"))?
         };
         let unet = cfg
@@ -127,21 +132,38 @@ impl CandleSdxlGenerator {
         let tok1 = Tokenizer::from_file(&tok1_p).map_err(|e| anyhow!("tokenizer1: {e}"))?;
         let tok2 = Tokenizer::from_file(&tok2_p).map_err(|e| anyhow!("tokenizer2: {e}"))?;
 
-        Ok(Self {
-            device,
-            dtype,
-            vae_scale: model.vae_scale(),
-            cfg,
-            vae,
-            unet,
-            clip1,
-            clip2,
-            tok1,
-            tok2,
-            width: w,
-            height: h,
-            step_cb: None,
-        })
+        let report = crate::LoadReport {
+            model: match model {
+                BaseModel::Sdxl => "SDXL",
+                BaseModel::SdxlTurbo => "SDXL-Turbo",
+            },
+            weights_cached,
+            lora: loras.first().map(|l| {
+                (
+                    l.repo.rsplit('/').next().unwrap_or(&l.repo).to_string(),
+                    l.scale,
+                )
+            }),
+            merge,
+        };
+        Ok((
+            Self {
+                device,
+                dtype,
+                vae_scale: model.vae_scale(),
+                cfg,
+                vae,
+                unet,
+                clip1,
+                clip2,
+                tok1,
+                tok2,
+                width: w,
+                height: h,
+                step_cb: None,
+            },
+            report,
+        ))
     }
 
     fn pad_id(&self, tok: &Tokenizer) -> u32 {

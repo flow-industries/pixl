@@ -47,6 +47,32 @@ pub fn hf_cache_dir() -> PathBuf {
     cache_root(false).join("huggingface").join("hub")
 }
 
+/// Whether the merged-UNet cache was reused or freshly built.
+#[derive(Clone, Copy, Debug)]
+pub enum MergeState {
+    None,
+    Cached,
+    Merged(usize),
+}
+
+/// What `CandleSdxlGenerator::load` actually did, for one-line status reporting.
+pub struct LoadReport {
+    pub model: &'static str,
+    pub weights_cached: bool,
+    pub lora: Option<(String, f32)>,
+    pub merge: MergeState,
+}
+
+/// True if the given HF repo already has downloaded snapshots in the local cache.
+pub fn hf_model_cached(repo: &str) -> bool {
+    let dir = hf_cache_dir()
+        .join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots");
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
 /// Sampler / output parameters shared by all backends.
 #[derive(Clone, Debug)]
 pub struct GenParams {

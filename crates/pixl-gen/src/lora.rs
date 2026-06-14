@@ -17,6 +17,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+use crate::MergeState;
 use candle_core::{DType, Device, Tensor};
 
 /// sgm attention-block envelope -> diffusers, for SDXL. Only attention sub-blocks
@@ -182,34 +184,30 @@ pub fn merged_unet_path(
     base_path: &Path,
     loras: &[(PathBuf, f32)],
     cache_dir: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, MergeState)> {
     let out = cache_dir.join(format!("unet-{}.safetensors", cache_key(base_path, loras)));
     if out.exists() {
-        eprintln!("  using cached merged UNet ({})", out.display());
-        return Ok(out);
+        return Ok((out, MergeState::Cached));
     }
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("create {}", cache_dir.display()))?;
 
     let mut base =
         candle_core::safetensors::load(base_path, &Device::Cpu).context("load base unet")?;
+    let mut merged = 0usize;
     for (path, scale) in loras {
-        let (a, s) = merge_into(&mut base, path, *scale)?;
+        let (a, _s) = merge_into(&mut base, path, *scale)?;
         anyhow::ensure!(
             a > 0,
             "lora {} mapped 0 modules — key convention mismatch",
             path.display()
         );
-        eprintln!(
-            "  lora {}: merged {a} modules ({s} skipped)",
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("?")
-        );
+        merged += a;
     }
     let tmp = out.with_extension(format!("tmp.{}", std::process::id()));
     candle_core::safetensors::save(&base, &tmp).context("write merged unet")?;
     std::fs::rename(&tmp, &out).context("commit merged unet cache")?;
-    eprintln!("  cached merged UNet -> {}", out.display());
-    Ok(out)
+    Ok((out, MergeState::Merged(merged)))
 }
 
 #[cfg(test)]

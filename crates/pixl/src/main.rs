@@ -23,7 +23,9 @@ fn main() -> Result<()> {
 /// `taskpolicy -b`) and cap the pixelize thread pool to one, so a batch stays out
 /// of the way of the rest of the machine.
 fn apply_low_priority() {
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build_global();
     #[cfg(target_os = "macos")]
     unsafe {
         const PRIO_DARWIN_PROCESS: libc::c_int = 4;
@@ -141,7 +143,7 @@ fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs)
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
     if !args.quiet {
-        eprintln!("output: {}", out_dir.display());
+        eprintln!("{:<8} {}", "output", out_dir.display());
     }
 
     if !args.lora_weight.is_finite() {
@@ -161,25 +163,35 @@ fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs)
         }]
     };
 
+    let (mut generator, report) = CandleSdxlGenerator::load(model, w, h, &loras)
+        .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
+
     if !args.quiet {
-        let name = match model {
-            BaseModel::Sdxl => "SDXL",
-            BaseModel::SdxlTurbo => "SDXL-Turbo",
-        };
-        // hf-hub shows a real byte-progress bar only when a file is actually fetched.
-        eprintln!("loading {name}\u{2026} (first use fetches ~7 GB of weights, then cached)");
-        if !loras.is_empty() {
-            eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
+        eprintln!(
+            "{:<8} {} ({})",
+            "model",
+            report.model,
+            if report.weights_cached {
+                "cached"
+            } else {
+                "fetched"
+            }
+        );
+        if let Some((name, scale)) = &report.lora {
+            eprintln!("{:<8} {name} @ {scale}", "lora");
+        }
+        match report.merge {
+            pixl_gen::MergeState::Cached => eprintln!("{:<8} merged (cached)", "unet"),
+            pixl_gen::MergeState::Merged(n) => eprintln!("{:<8} merged ({n} modules)", "unet"),
+            pixl_gen::MergeState::None => {}
         }
         if args.no_lora && !args.no_postprocess {
-            eprintln!("  note: --no-lora produces a normal (non-pixel-art) image, so the pixelize pass has no real grid to snap and the result will look like noise. Drop --no-lora for pixel art, or add --no-postprocess to keep the raw render.");
+            eprintln!("note: --no-lora produces a non-pixel-art image; the pixelize pass has no grid to snap (looks like noise). Drop --no-lora, or add --no-postprocess for the raw render.");
         }
         if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) {
-            eprintln!("  note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
+            eprintln!("note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
         }
     }
-    let mut generator = CandleSdxlGenerator::load(model, w, h, &loras)
-        .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
 
     let draw = if args.quiet {
         ProgressDrawTarget::hidden()
@@ -455,7 +467,10 @@ fn open_link(path: &Path) -> String {
     let uri = format!("file://{}", abs.to_string_lossy().replace(' ', "%20"));
     let esc = char::from(0x1b);
     let bs = char::from(0x5c);
-    format!("open: {esc}]8;;{uri}{esc}{bs}{}{esc}]8;;{esc}{bs}", abs.display())
+    format!(
+        "open: {esc}]8;;{uri}{esc}{bs}{}{esc}]8;;{esc}{bs}",
+        abs.display()
+    )
 }
 
 #[cfg(feature = "metal")]
@@ -582,7 +597,10 @@ fn dir_entries_by_size(dir: &Path) -> Vec<(String, u64)> {
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
-            out.push((e.file_name().to_string_lossy().into_owned(), dir_size(&e.path())));
+            out.push((
+                e.file_name().to_string_lossy().into_owned(),
+                dir_size(&e.path()),
+            ));
         }
     }
     out.sort_by(|a, b| b.1.cmp(&a.1));
