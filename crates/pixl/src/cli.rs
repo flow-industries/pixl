@@ -59,6 +59,12 @@ pub struct GenerateArgs {
     /// Skip the true-pixel-art post-process and save raw generations.
     #[arg(long, default_value_t = false)]
     pub no_postprocess: bool,
+    /// Disable the default pixel-art LoRA.
+    #[arg(long, default_value_t = false)]
+    pub no_lora: bool,
+    /// Pixel-art LoRA strength.
+    #[arg(long, default_value_t = 1.0)]
+    pub lora_weight: f32,
 }
 
 #[derive(Args, Debug, Clone)]

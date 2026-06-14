@@ -121,12 +121,24 @@ fn generate_metal(
     h: u32,
     args: &GenerateArgs,
 ) -> Result<()> {
-    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenParams, GenRequest, Generator};
+    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenParams, GenRequest, Generator, LoraRef};
     use std::time::Instant;
 
+    let loras = if args.no_lora {
+        Vec::new()
+    } else {
+        vec![LoraRef {
+            repo: "nerijs/pixel-art-xl".into(),
+            file: "pixel-art-xl.safetensors".into(),
+            scale: args.lora_weight,
+        }]
+    };
     eprintln!("loading SDXL-Turbo (first run downloads weights, ~7 GB, one time)…");
+    if !loras.is_empty() {
+        eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
+    }
     let load = Instant::now();
-    let generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h)
+    let generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h, &loras)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
     eprintln!("ready in {:.1}s", load.elapsed().as_secs_f32());
 

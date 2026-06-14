@@ -3,7 +3,8 @@
 //! Models are built once (UNet + VAE in f16, the two CLIP text encoders in f32)
 //! and reused across a batch. Mirrors candle's own stable-diffusion example for
 //! the dual-CLIP embedding and the denoise loop; the UNet forward is 3-arg (no
-//! SDXL micro-conditioning — verified to render fine).
+//! SDXL micro-conditioning — verified to render fine). Pixel-art LoRAs are
+//! merged into the UNet at load time (see `crate::lora`).
 
 use anyhow::{anyhow, Context, Result};
 use candle_core::{DType, Device, IndexOp, Tensor, D};
@@ -46,6 +47,14 @@ impl BaseModel {
     }
 }
 
+/// A LoRA to fetch from the HF hub and merge into the UNet at load time.
+#[derive(Clone, Debug)]
+pub struct LoraRef {
+    pub repo: String,
+    pub file: String,
+    pub scale: f32,
+}
+
 pub struct CandleSdxlGenerator {
     device: Device,
     dtype: DType,
@@ -62,7 +71,7 @@ pub struct CandleSdxlGenerator {
 }
 
 impl CandleSdxlGenerator {
-    pub fn load(model: BaseModel, width: u32, height: u32) -> Result<Self> {
+    pub fn load(model: BaseModel, width: u32, height: u32, loras: &[LoraRef]) -> Result<Self> {
         let device = crate::device::select(0).map_err(|e| anyhow!("device: {e}"))?;
         let dtype = DType::F16;
         let (w, h) = (width as usize, height as usize);
@@ -85,8 +94,19 @@ impl CandleSdxlGenerator {
         let tok2_p = pull("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json")?;
 
         let vae = cfg.build_vae(&vae_w, &device, dtype).context("build vae")?;
+        let unet_file = if loras.is_empty() {
+            unet_w
+        } else {
+            let mut specs = Vec::with_capacity(loras.len());
+            for l in loras {
+                specs.push((pull(&l.repo, &l.file)?, l.scale));
+            }
+            let cache = lora_cache_dir();
+            crate::lora::merged_unet_path(&unet_w, &specs, &cache)
+                .map_err(|e| anyhow!("lora merge: {e}"))?
+        };
         let unet = cfg
-            .build_unet(&unet_w, &device, 4, false, dtype)
+            .build_unet(&unet_file, &device, 4, false, dtype)
             .context("build unet")?;
         let clip1 = sd::build_clip_transformer(&cfg.clip, &clip1_w, &device, DType::F32)
             .context("build clip1")?;
@@ -121,11 +141,21 @@ impl CandleSdxlGenerator {
         tok.get_vocab(true).get(key).copied().unwrap_or(0)
     }
 
-    fn encode(&self, tok: &Tokenizer, clip: &clip::ClipTextTransformer, prompt: &str, use_guide: bool) -> Result<Tensor> {
+    fn encode(
+        &self,
+        tok: &Tokenizer,
+        clip: &clip::ClipTextTransformer,
+        prompt: &str,
+        use_guide: bool,
+    ) -> Result<Tensor> {
         let max = self.cfg.clip.max_position_embeddings;
         let pad = self.pad_id(tok);
         let tokens = |text: &str| -> Result<Tensor> {
-            let mut ids = tok.encode(text, true).map_err(|e| anyhow!("encode: {e}"))?.get_ids().to_vec();
+            let mut ids = tok
+                .encode(text, true)
+                .map_err(|e| anyhow!("encode: {e}"))?
+                .get_ids()
+                .to_vec();
             ids.truncate(max);
             while ids.len() < max {
                 ids.push(pad);
@@ -180,6 +210,13 @@ impl CandleSdxlGenerator {
         let img = (img * 255.0)?.to_dtype(DType::U8)?.i(0)?;
         tensor_to_rgb(&img)
     }
+}
+
+fn lora_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join(".cache").join("pixl").join("merged")
 }
 
 fn tensor_to_rgb(chw: &Tensor) -> Result<RgbImage> {

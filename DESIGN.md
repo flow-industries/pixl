@@ -1,8 +1,8 @@
 # pixl — Design & Implementation Plan
 
-> **Status:** Active. M0–M2 are implemented and green — candle SDXL generates
-> on Metal and the full generate→pixelize chain produces true pixel art (see
-> "M2 results" below). M3–M5 (LoRA, overlapped pipeline, polish) are planned.
+> **Status:** Active. M0–M3 are implemented and green — candle SDXL + a
+> runtime-merged pixel-art LoRA generate on Metal and the full generate→pixelize
+> chain produces true pixel art. M4–M5 (overlapped pipeline, polish) are planned.
 >
 > This plan was produced by a multi-agent research+design pass and hardened by
 > two adversarial verifiers (candle/LoRA feasibility; pixelize-algorithm
@@ -22,9 +22,28 @@ limited-palette quantize) — `pixl 100 "stardew valley style house" ./`.**
 | M0 — workspace scaffold, CLI surface, `Generator` seam | **done** |
 | M1 — `pixl-pixelize` algorithm + synthetic golden tests (no GPU) | **done** |
 | M2 — candle SDXL, one image on Metal | **done** |
-| M3 — runtime LoRA merge (pixel-art + Lightning) | planned |
+| M3 — runtime LoRA merge (sgm→diffusers key map) | **done** |
 | M4 — overlapped generate→pixelize→save pipeline + progress UX | planned |
 | M5 — first-run weights UX, packaging | planned |
+
+### M3 results — runtime LoRA merge
+
+- Pixel-art SDXL LoRAs ship in **sgm/A1111 naming** (`lora_unet_input_blocks_4_1_…`)
+  while candle's UNet uses **diffusers naming** — these are different schemes, not
+  a dots-vs-underscores difference (the verifier's flagged risk, sharpened).
+- Since these LoRAs only touch attention blocks, the mapper is just the
+  **attention-block envelope** (11 entries) + inner pass-through, not mold's full
+  checkpoint converter. **Verified: `nerijs/pixel-art-xl` maps 722/722 modules,
+  0 skipped** against the real base keys. Output is visibly pixel-art-styled.
+- **Merge strategy:** merging in-memory via `VarBuilder::from_tensors` pinned ~5 GB
+  and made generation 3× slower and *escalating* (22→100→119 s — memory pressure).
+  Fixed by merging on CPU and writing a **content-addressed merged-UNet cache**,
+  then loading it through candle's normal **mmap path** — generation is back to the
+  flat ~7.5 s/image baseline. First merge ~one-time (4.8 GB cache per LoRA combo);
+  subsequent runs hit the cache (load ~11 s).
+- Default: SDXL-Turbo + `nerijs/pixel-art-xl` (`--lora-weight`, `--no-lora`). The
+  mapper is generic kohya-SDXL, so SDXL-Lightning would slot in via the same path
+  (not wired — Turbo already provides few-step speed).
 
 ### M2 results (measured on the M4 Pro)
 

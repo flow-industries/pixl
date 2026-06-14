@@ -19,12 +19,11 @@ Early. Built and tested today:
 - **`pixl-pixelize`** — the true-pixel-art post-processor (grid detection,
   cell collapse, Lab k-means palette). Pure CPU, deterministic, golden-tested.
 - **`pixl pixelize <img>`** — fully working CLI subcommand (no GPU needed).
-- **`pixl-gen`** — candle SDXL on Metal **works** (behind the `metal` feature):
-  `pixl "a prompt"` generates and snaps to true pixel art. ~7.5 s/image
-  (SDXL-Turbo @ 4 steps, 512²) on an M4 Pro.
+- **`pixl-gen`** — candle SDXL on Metal **works** (behind the `metal` feature)
+  with a **runtime-merged pixel-art LoRA**: `pixl "a prompt"` generates true
+  pixel art at ~7.5 s/image (SDXL-Turbo @ 4 steps, 512²) on an M4 Pro.
 
-Next: M3 (runtime pixel-art + Lightning LoRA merge), then the overlapped
-pipeline + progress UX (M4).
+Next: the overlapped generate→pixelize pipeline + progress UX (M4).
 
 ## Usage today
 

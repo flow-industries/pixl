@@ -12,9 +12,11 @@ use image::RgbImage;
 #[cfg(feature = "metal")]
 pub mod device;
 #[cfg(feature = "metal")]
+mod lora;
+#[cfg(feature = "metal")]
 mod sdxl;
 #[cfg(feature = "metal")]
-pub use sdxl::{BaseModel, CandleSdxlGenerator};
+pub use sdxl::{BaseModel, CandleSdxlGenerator, LoraRef};
 
 /// Sampler / output parameters shared by all backends.
 #[derive(Clone, Debug)]
