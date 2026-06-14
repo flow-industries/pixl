@@ -1,8 +1,9 @@
 # pixl — Design & Implementation Plan
 
-> **Status:** Active. M0–M3 are implemented and green — candle SDXL + a
-> runtime-merged pixel-art LoRA generate on Metal and the full generate→pixelize
-> chain produces true pixel art. M4–M5 (overlapped pipeline, polish) are planned.
+> **Status:** Active. M0–M4 are implemented and green — `pixl N "prompt" ./out`
+> generates on Metal (SDXL + runtime-merged pixel-art LoRA), pixelizes via an
+> overlapped pipeline with per-image progress, and saves true pixel art. M5
+> (first-run weight UX, packaging) is planned.
 >
 > This plan was produced by a multi-agent research+design pass and hardened by
 > two adversarial verifiers (candle/LoRA feasibility; pixelize-algorithm
@@ -25,6 +26,22 @@ limited-palette quantize) — `pixl 100 "stardew valley style house" ./`.**
 | M3 — runtime LoRA merge (sgm→diffusers key map) | **done** |
 | M4 — overlapped generate→pixelize→save pipeline + progress UX | planned |
 | M5 — first-run weights UX, packaging | planned |
+
+### M4 results — overlapped pipeline + progress
+
+- `generate → pixelize → save` is a bounded `crossbeam-channel` (cap = `--jobs`)
+  with `std::thread::scope` workers: generation runs serially on the single Metal
+  queue (producer) while pixelize+save of image *i* overlaps diffusion of *i+1*.
+- `indicatif` MultiProgress (stderr): overall `[k/N]` bar + a spinner driven by a
+  **denoise-step callback** on the `Generator` (`image i/N · diffusing s/S`).
+- Flags: `--jobs` (default 2), `--json` (one JSONL event per finished image on
+  stdout, bars on stderr), `--quiet`, `--fail-fast`. Ctrl-C cancels between
+  images and exits 130; per-image failures are collected (exit 1 if any).
+- Verified end-to-end (2 imgs, JSONL + summary, no deadlock).
+- **Resource note:** generation is GPU-bound and can saturate an integrated GPU.
+  Default `--jobs` lowered to 2; README documents a `taskpolicy -b` / `nice` /
+  `RAYON_NUM_THREADS` throttle. The `autoreleasepool` Metal-leak guard remains
+  deferred (M2's mmap path showed flat memory; revisit on long real batches).
 
 ### M3 results — runtime LoRA merge
 

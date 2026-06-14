@@ -68,6 +68,7 @@ pub struct CandleSdxlGenerator {
     vae_scale: f64,
     width: usize,
     height: usize,
+    step_cb: Option<crate::StepCallback>,
 }
 
 impl CandleSdxlGenerator {
@@ -133,6 +134,7 @@ impl CandleSdxlGenerator {
             tok2,
             width: w,
             height: h,
+            step_cb: None,
         })
     }
 
@@ -188,7 +190,9 @@ impl CandleSdxlGenerator {
             * scheduler.init_noise_sigma())?
         .to_dtype(self.dtype)?;
 
-        for &t in scheduler.timesteps().to_vec().iter() {
+        let timesteps = scheduler.timesteps().to_vec();
+        let total = timesteps.len();
+        for (si, &t) in timesteps.iter().enumerate() {
             let input = if use_guide {
                 Tensor::cat(&[&latents, &latents], 0)?
             } else {
@@ -203,6 +207,9 @@ impl CandleSdxlGenerator {
                 noise
             };
             latents = scheduler.step(&noise, t, &latents)?;
+            if let Some(cb) = &self.step_cb {
+                cb(si + 1, total);
+            }
         }
 
         let img = self.vae.decode(&(latents / self.vae_scale)?)?;
@@ -233,5 +240,9 @@ impl Generator for CandleSdxlGenerator {
             .render(&req.prompt, req.params.steps as usize, req.params.guidance as f64, seed)
             .map_err(|e| GenError::Backend(e.to_string()))?;
         Ok(GenImage { image, seed })
+    }
+
+    fn set_step_callback(&mut self, cb: crate::StepCallback) {
+        self.step_cb = Some(cb);
     }
 }

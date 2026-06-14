@@ -88,24 +88,13 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
 
-    println!("pixl: generating {count} image(s) at {w}x{h}");
-    println!("  prompt : {prompt:?}");
-    println!("  out_dir: {}", out_dir.display());
-    println!(
-        "  sampler: {} steps, cfg {}, seed {}..{}",
-        args.steps,
-        args.cfg,
-        args.seed,
-        args.seed + count as u64 - 1
-    );
-
     #[cfg(feature = "metal")]
     {
         generate_metal(&prompt, count, &out_dir, w, h, &args)
     }
     #[cfg(not(feature = "metal"))]
     {
-        let _ = (w, h);
+        let _ = (w, h, count, &prompt);
         anyhow::bail!(
             "this build has no generation backend; rebuild with --features metal (macOS). `pixl pixelize <img>` works without it."
         )
@@ -121,8 +110,11 @@ fn generate_metal(
     h: u32,
     args: &GenerateArgs,
 ) -> Result<()> {
-    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenParams, GenRequest, Generator, LoraRef};
-    use std::time::Instant;
+    use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     let loras = if args.no_lora {
         Vec::new()
@@ -133,14 +125,52 @@ fn generate_metal(
             scale: args.lora_weight,
         }]
     };
-    eprintln!("loading SDXL-Turbo (first run downloads weights, ~7 GB, one time)…");
-    if !loras.is_empty() {
-        eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
+
+    if !args.quiet {
+        eprintln!("loading SDXL-Turbo (first run downloads weights, ~7 GB, one time)…");
+        if !loras.is_empty() {
+            eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
+        }
     }
-    let load = Instant::now();
-    let generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h, &loras)
+    let mut generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h, &loras)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
-    eprintln!("ready in {:.1}s", load.elapsed().as_secs_f32());
+
+    let draw = if args.quiet {
+        ProgressDrawTarget::hidden()
+    } else {
+        ProgressDrawTarget::stderr()
+    };
+    let mp = MultiProgress::with_draw_target(draw);
+    let overall = mp.add(ProgressBar::new(count as u64));
+    overall.set_style(
+        ProgressStyle::with_template(
+            "{prefix:>8.cyan.bold} [{bar:28.cyan/blue}] {pos}/{len} · {elapsed_precise} · eta {eta}",
+        )
+        .unwrap()
+        .progress_chars("=> "),
+    );
+    overall.set_prefix("pixl");
+    let gen_spin = mp.add(ProgressBar::new_spinner());
+    gen_spin.enable_steady_tick(Duration::from_millis(100));
+    gen_spin.set_style(ProgressStyle::with_template("{spinner:.green} {msg}").unwrap());
+
+    let cur = Arc::new(AtomicUsize::new(0));
+    {
+        let spin = gen_spin.clone();
+        let cur = cur.clone();
+        generator.set_step_callback(Box::new(move |step, steps| {
+            spin.set_message(format!(
+                "image {}/{count} · diffusing {step}/{steps}",
+                cur.load(Ordering::Relaxed) + 1
+            ));
+        }));
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let cancel = cancel.clone();
+        let _ = ctrlc::set_handler(move || cancel.store(true, Ordering::Relaxed));
+    }
 
     let req = GenRequest {
         prompt: prompt.to_string(),
@@ -154,33 +184,132 @@ fn generate_metal(
         loras: vec![],
     };
     let slug = slugify(prompt);
+    let jobs = if args.jobs > 0 {
+        args.jobs
+    } else {
+        std::thread::available_parallelism().map(|n| n.get().min(2)).unwrap_or(1)
+    };
 
-    for i in 0..count {
-        let t = Instant::now();
-        let gi = generator
-            .generate(&req, i as usize)
-            .map_err(|e| anyhow::anyhow!("generating image {i}: {e}"))?;
-        let out = if args.no_postprocess {
-            gi.image
-        } else {
-            postprocess(&gi.image, args)?
-        };
-        let path = out_dir.join(format!("{slug}_{i:03}.png"));
-        out.save(&path)
-            .with_context(|| format!("saving {}", path.display()))?;
-        println!(
-            "[{}/{count}] seed {} {:.1}s -> {}",
-            i + 1,
-            gi.seed,
-            t.elapsed().as_secs_f32(),
-            path.display()
+    let (tx, rx) = crossbeam_channel::bounded::<(usize, GenImage)>(jobs);
+    let failures: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let started = Instant::now();
+
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            let rx = rx.clone();
+            let overall = overall.clone();
+            let failures = failures.clone();
+            let out_dir = out_dir.to_path_buf();
+            let slug = slug.clone();
+            let args = args.clone();
+            scope.spawn(move || {
+                for (i, gi) in rx.iter() {
+                    match pixelize_and_save(gi, i, &out_dir, &slug, &args) {
+                        Ok(json) => {
+                            if args.json {
+                                println!("{json}");
+                            }
+                        }
+                        Err(e) => failures.lock().unwrap().push((i, e.to_string())),
+                    }
+                    overall.inc(1);
+                }
+            });
+        }
+        drop(rx);
+
+        for i in 0..count as usize {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            cur.store(i, Ordering::Relaxed);
+            match generator.generate(&req, i) {
+                Ok(gi) => {
+                    if tx.send((i, gi)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    failures.lock().unwrap().push((i, e.to_string()));
+                    if args.fail_fast {
+                        cancel.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+        }
+        drop(tx);
+    });
+
+    gen_spin.finish_and_clear();
+    overall.finish_and_clear();
+
+    let fails = failures.lock().unwrap();
+    let ok = count as usize - fails.len();
+    let cancelled = cancel.load(Ordering::Relaxed);
+    if !args.quiet {
+        let secs = started.elapsed().as_secs_f32();
+        eprintln!(
+            "{} {ok}/{count} image(s) · {secs:.1}s · {:.1}s/img{}{} -> {}",
+            if fails.is_empty() && !cancelled { "✓" } else { "•" },
+            if ok > 0 { secs / ok as f32 } else { 0.0 },
+            if cancelled { " · cancelled" } else { "" },
+            if fails.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} failed", fails.len())
+            },
+            out_dir.display(),
         );
+        for (i, e) in fails.iter() {
+            eprintln!("  image {i}: {e}");
+        }
+    }
+    if cancelled {
+        std::process::exit(130);
+    }
+    if !fails.is_empty() {
+        anyhow::bail!("{} image(s) failed", fails.len());
     }
     Ok(())
 }
 
+/// Pixelize (unless disabled) + save one generated image. Returns a JSON summary.
 #[cfg(feature = "metal")]
-fn postprocess(img: &image::RgbImage, args: &GenerateArgs) -> Result<image::RgbImage> {
+fn pixelize_and_save(
+    gi: pixl_gen::GenImage,
+    i: usize,
+    out_dir: &Path,
+    slug: &str,
+    args: &GenerateArgs,
+) -> Result<String> {
+    let path = out_dir.join(format!("{slug}_{i:03}.png"));
+    let (cells, colors) = if args.no_postprocess {
+        gi.image
+            .save(&path)
+            .with_context(|| format!("saving {}", path.display()))?;
+        ((gi.image.width(), gi.image.height()), 0u16)
+    } else {
+        let (out, report) = postprocess(&gi.image, args)?;
+        out.save(&path)
+            .with_context(|| format!("saving {}", path.display()))?;
+        (report.out_cells, report.palette_len)
+    };
+    Ok(serde_json::json!({
+        "index": i,
+        "seed": gi.seed,
+        "path": path.to_string_lossy(),
+        "cells": [cells.0, cells.1],
+        "colors": colors,
+    })
+    .to_string())
+}
+
+#[cfg(feature = "metal")]
+fn postprocess(
+    img: &image::RgbImage,
+    args: &GenerateArgs,
+) -> Result<(image::RgbImage, pixl_pixelize::PixelizeReport)> {
     let (w, h) = img.dimensions();
     let mut rgba = image::RgbaImage::new(w, h);
     for (x, y, p) in img.enumerate_pixels() {
@@ -191,20 +320,20 @@ fn postprocess(img: &image::RgbImage, args: &GenerateArgs) -> Result<image::RgbI
         max_colors: args.colors,
         ..Default::default()
     };
-    let (small, _report) = pixelize(&rgba, &params)?;
-    // upscale nearest so the saved file is comfortably viewable
+    let (small, report) = pixelize(&rgba, &params)?;
     let scale = (512 / small.width().max(1)).max(1);
-    Ok(image::imageops::resize(
+    let up = image::imageops::resize(
         &small,
         small.width() * scale,
         small.height() * scale,
         FilterType::Nearest,
-    ))
+    );
+    Ok((up, report))
 }
 
 #[cfg(feature = "metal")]
 fn slugify(s: &str) -> String {
-    let mut out: String = s
+    let out: String = s
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -214,8 +343,7 @@ fn slugify(s: &str) -> String {
             }
         })
         .collect();
-    out.truncate(40);
-    let trimmed = out.trim_matches('_').to_string();
+    let trimmed = out[..out.len().min(40)].trim_matches('_').to_string();
     if trimmed.is_empty() {
         "img".into()
     } else {

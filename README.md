@@ -20,10 +20,11 @@ Early. Built and tested today:
   cell collapse, Lab k-means palette). Pure CPU, deterministic, golden-tested.
 - **`pixl pixelize <img>`** — fully working CLI subcommand (no GPU needed).
 - **`pixl-gen`** — candle SDXL on Metal **works** (behind the `metal` feature)
-  with a **runtime-merged pixel-art LoRA**: `pixl "a prompt"` generates true
-  pixel art at ~7.5 s/image (SDXL-Turbo @ 4 steps, 512²) on an M4 Pro.
+  with a **runtime-merged pixel-art LoRA**: `pixl 100 "a prompt" ./out` generates
+  and snaps true pixel art at ~7.5 s/image (SDXL-Turbo @ 4 steps, 512²) on an M4
+  Pro, with an overlapped generate→pixelize pipeline + per-image progress.
 
-Next: the overlapped generate→pixelize pipeline + progress UX (M4).
+Next: first-run weight UX + `pixl models` cache management + packaging (M5).
 
 ## Usage today
 
@@ -69,3 +70,20 @@ CI with no GPU. See `DESIGN.md` for the full design and roadmap.
 ## License
 
 MIT OR Apache-2.0.
+
+## Resource usage
+
+Generation runs SDXL on the GPU — it is **GPU-heavy** and will make the machine
+warm/loud during a batch. The biggest lever is doing less work: fewer `--steps`,
+smaller `--size`, fewer images. To keep the UI responsive, run it throttled:
+
+```bash
+# macOS: background QoS + nice + cap the pixelize threads
+RAYON_NUM_THREADS=2 /usr/sbin/taskpolicy -b nice -n 19 \
+  pixl 100 "stardew valley style house" ./out --jobs 1
+```
+
+- `--jobs` controls pixelize/save worker threads (default 2; `--jobs 1` is plenty).
+- Generation is serial on the single GPU queue regardless of `--jobs`.
+- The merged-LoRA cache lives at `~/.cache/pixl/merged/` (~4.8 GB per LoRA combo);
+  delete it to reclaim space. Use `--no-lora` to skip the merge entirely.

@@ -65,6 +65,18 @@ pub struct GenerateArgs {
     /// Pixel-art LoRA strength.
     #[arg(long, default_value_t = 1.0)]
     pub lora_weight: f32,
+    /// Pixelize/save worker threads (0 = auto).
+    #[arg(short = 'j', long, default_value_t = 0)]
+    pub jobs: usize,
+    /// Emit one JSON line per finished image on stdout.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+    /// Suppress progress output.
+    #[arg(long, default_value_t = false)]
+    pub quiet: bool,
+    /// Abort on the first failed image.
+    #[arg(long, default_value_t = false)]
+    pub fail_fast: bool,
 }
 
 #[derive(Args, Debug, Clone)]
