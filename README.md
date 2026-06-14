@@ -19,11 +19,12 @@ Early. Built and tested today:
 - **`pixl-pixelize`** — the true-pixel-art post-processor (grid detection,
   cell collapse, Lab k-means palette). Pure CPU, deterministic, golden-tested.
 - **`pixl pixelize <img>`** — fully working CLI subcommand (no GPU needed).
-- **`pixl-gen`** — the `Generator` trait/seam; the candle/Metal SDXL backend
-  lands next (see `DESIGN.md`, milestones M2–M5).
+- **`pixl-gen`** — candle SDXL on Metal **works** (behind the `metal` feature):
+  `pixl "a prompt"` generates and snaps to true pixel art. ~7.5 s/image
+  (SDXL-Turbo @ 4 steps, 512²) on an M4 Pro.
 
-`pixl <count> <prompt> <out_dir>` parses and is wired end-to-end except for the
-generation backend itself.
+Next: M3 (runtime pixel-art + Lightning LoRA merge), then the overlapped
+pipeline + progress UX (M4).
 
 ## Usage today
 
@@ -41,12 +42,17 @@ pixl pixelize art/*.png -o out/ --colors 32
 ## Build
 
 ```bash
-cargo build --release      # single self-contained binary at target/release/pixl
-cargo test                 # GPU-free golden tests
-cargo run --example demo_fixture -- /tmp/demo.png   # fabricate a test image
+# pixelize-only build (no GPU); CI builds this
+cargo build --release
+cargo test                                   # GPU-free golden tests
+
+# full build with the candle/Metal generation backend (macOS / Apple Silicon)
+cargo build --release --features metal
+cargo run --features metal -- 4 "stardew valley style house" ./out
 ```
 
-Requires a stable Rust toolchain (see `rust-toolchain.toml`).
+Requires a stable Rust toolchain (see `rust-toolchain.toml`). The first generate
+downloads ~7 GB of SDXL weights (one time, cached).
 
 ## Architecture
 

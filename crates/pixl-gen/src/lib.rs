@@ -1,13 +1,20 @@
 //! Generation backend abstraction.
 //!
-//! The candle/Metal SDXL implementation lands in M2; this crate defines the
-//! `Generator` trait and its request/response types now so the CLI and the
-//! overlapped pipeline can be built and tested against the seam. Keeping the
-//! heavy ML tree behind this boundary is what lets `pixl-pixelize` stay GPU-free.
+//! The `Generator` trait + request/response types compile everywhere. The
+//! candle/Metal SDXL backend (`CandleSdxlGenerator`) is behind the `metal`
+//! feature so the trait, the CLI, and `pixl-pixelize` stay buildable on CI and
+//! Linux without the GPU stack.
 
 use std::path::PathBuf;
 
 use image::RgbImage;
+
+#[cfg(feature = "metal")]
+pub mod device;
+#[cfg(feature = "metal")]
+mod sdxl;
+#[cfg(feature = "metal")]
+pub use sdxl::{BaseModel, CandleSdxlGenerator};
 
 /// Sampler / output parameters shared by all backends.
 #[derive(Clone, Debug)]
@@ -53,31 +60,31 @@ pub struct GenImage {
     pub seed: u64,
 }
 
-/// Per-step progress hook (denoise step, total steps), driven from the backend's
-/// own sampling loop so the CLI can show a live spinner.
+/// Per-step progress hook (denoise step, total steps).
 pub type StepCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GenError {
-    #[error("generation backend not yet implemented (lands in M2: candle/Metal SDXL)")]
+    #[error("generation backend not in this build (rebuild with --features metal)")]
     NotImplemented,
     #[error("weights unavailable: {0}")]
     Weights(String),
     #[error("device init failed: {0}")]
     Device(String),
+    #[error("backend error: {0}")]
+    Backend(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
-/// A local diffusion backend. `CandleSdxlGenerator` will implement this in M2;
-/// a remote/subprocess backend could implement the same signature unchanged.
+/// A local diffusion backend. `CandleSdxlGenerator` implements this under the
+/// `metal` feature; a remote/subprocess backend could implement it unchanged.
 pub trait Generator: Send + Sync {
     fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError>;
-    /// Install a per-step progress callback. Default no-op.
     fn set_step_callback(&mut self, _cb: StepCallback) {}
 }
 
-/// Placeholder backend so the CLI and pipeline compile and run before M2.
+/// Placeholder backend for builds without a generation feature.
 pub struct PendingGenerator;
 
 impl Generator for PendingGenerator {

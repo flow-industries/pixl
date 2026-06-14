@@ -10,6 +10,10 @@ rust-version.workspace = true
 name = "pixl"
 path = "src/main.rs"
 
+[features]
+# Build the candle/Metal generation backend (macOS): `cargo build --features metal`.
+metal = ["pixl-gen/metal"]
+
 [dependencies]
 pixl-pixelize.workspace = true
 pixl-gen.workspace = true

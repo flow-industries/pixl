@@ -1,8 +1,8 @@
 # pixl — Design & Implementation Plan
 
-> **Status:** Active. M0 (scaffold) and M1 (pixelize lib + golden tests) are
-> implemented and green. M2–M5 (candle/Metal generation, LoRA, overlapped
-> pipeline, polish) are planned below.
+> **Status:** Active. M0–M2 are implemented and green — candle SDXL generates
+> on Metal and the full generate→pixelize chain produces true pixel art (see
+> "M2 results" below). M3–M5 (LoRA, overlapped pipeline, polish) are planned.
 >
 > This plan was produced by a multi-agent research+design pass and hardened by
 > two adversarial verifiers (candle/LoRA feasibility; pixelize-algorithm
@@ -21,10 +21,24 @@ limited-palette quantize) — `pixl 100 "stardew valley style house" ./`.**
 |---|---|
 | M0 — workspace scaffold, CLI surface, `Generator` seam | **done** |
 | M1 — `pixl-pixelize` algorithm + synthetic golden tests (no GPU) | **done** |
-| M2 — candle SDXL, one image on Metal | planned |
+| M2 — candle SDXL, one image on Metal | **done** |
 | M3 — runtime LoRA merge (pixel-art + Lightning) | planned |
 | M4 — overlapped generate→pixelize→save pipeline + progress UX | planned |
 | M5 — first-run weights UX, packaging | planned |
+
+### M2 results (measured on the M4 Pro)
+
+- candle 0.10.2 + Metal **builds and runs** here (GPU matmul smoke test passes).
+- SDXL-Turbo @ 4 steps, 512², dev build: **~7.5 s/image steady-state**; one-time
+  weight download ~7 GB (~33 min on this network), cached load ~11 s thereafter.
+- Output is coherent (not black) — the **fp16-fix VAE is mandatory** and applied.
+- Full `generate → pixelize` chain produces a clean true-pixel-art sprite.
+- **Memory:** RSS flat (~90 MB anonymous; weights mmap'd + in Metal unified
+  memory) and per-image time steady across an 8-image loop — no leak observed,
+  so the `objc2::autoreleasepool` guard is deferred to M4's long-run pipeline.
+- The candle/Metal stack is behind an optional **`metal` feature** (default off)
+  so default builds + CI stay GPU-free; `cargo build --features metal` (macOS)
+  builds the real generator.
 
 ### Deviations adopted during M1 (intentional, documented)
 

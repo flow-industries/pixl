@@ -1,0 +1,200 @@
+//! SDXL / SDXL-Turbo text-to-image on candle's Metal backend.
+//!
+//! Models are built once (UNet + VAE in f16, the two CLIP text encoders in f32)
+//! and reused across a batch. Mirrors candle's own stable-diffusion example for
+//! the dual-CLIP embedding and the denoise loop; the UNet forward is 3-arg (no
+//! SDXL micro-conditioning — verified to render fine).
+
+use anyhow::{anyhow, Context, Result};
+use candle_core::{DType, Device, IndexOp, Tensor, D};
+use candle_nn::Module;
+use candle_transformers::models::stable_diffusion::{
+    self as sd, clip, vae::AutoEncoderKL, StableDiffusionConfig,
+};
+use hf_hub::api::sync::Api;
+use image::RgbImage;
+use tokenizers::Tokenizer;
+
+use crate::{GenError, GenImage, GenRequest, Generator};
+
+#[derive(Clone, Copy, Debug)]
+pub enum BaseModel {
+    /// Few-step, CFG-free; candle-native. Best for fast iteration / M2.
+    SdxlTurbo,
+    /// Full SDXL base (needs more steps without a Lightning LoRA).
+    Sdxl,
+}
+
+impl BaseModel {
+    fn repo(&self) -> &'static str {
+        match self {
+            BaseModel::SdxlTurbo => "stabilityai/sdxl-turbo",
+            BaseModel::Sdxl => "stabilityai/stable-diffusion-xl-base-1.0",
+        }
+    }
+    fn vae_scale(&self) -> f64 {
+        match self {
+            BaseModel::SdxlTurbo => 0.13025,
+            BaseModel::Sdxl => 0.18215,
+        }
+    }
+    fn config(&self, w: usize, h: usize) -> StableDiffusionConfig {
+        match self {
+            BaseModel::SdxlTurbo => StableDiffusionConfig::sdxl_turbo(None, Some(h), Some(w)),
+            BaseModel::Sdxl => StableDiffusionConfig::sdxl(None, Some(h), Some(w)),
+        }
+    }
+}
+
+pub struct CandleSdxlGenerator {
+    device: Device,
+    dtype: DType,
+    cfg: StableDiffusionConfig,
+    vae: AutoEncoderKL,
+    unet: sd::unet_2d::UNet2DConditionModel,
+    clip1: clip::ClipTextTransformer,
+    clip2: clip::ClipTextTransformer,
+    tok1: Tokenizer,
+    tok2: Tokenizer,
+    vae_scale: f64,
+    width: usize,
+    height: usize,
+}
+
+impl CandleSdxlGenerator {
+    pub fn load(model: BaseModel, width: u32, height: u32) -> Result<Self> {
+        let device = crate::device::select(0).map_err(|e| anyhow!("device: {e}"))?;
+        let dtype = DType::F16;
+        let (w, h) = (width as usize, height as usize);
+        let cfg = model.config(w, h);
+        let repo = model.repo();
+
+        let api = Api::new().context("hf-hub api")?;
+        let pull = |r: &str, f: &str| -> Result<std::path::PathBuf> {
+            api.model(r.to_string())
+                .get(f)
+                .with_context(|| format!("download {r}/{f}"))
+        };
+
+        let unet_w = pull(repo, "unet/diffusion_pytorch_model.fp16.safetensors")?;
+        // f16 SDXL VAE renders black images (candle #1060) -> fp16-fix VAE is mandatory.
+        let vae_w = pull("madebyollin/sdxl-vae-fp16-fix", "diffusion_pytorch_model.safetensors")?;
+        let clip1_w = pull(repo, "text_encoder/model.fp16.safetensors")?;
+        let clip2_w = pull(repo, "text_encoder_2/model.fp16.safetensors")?;
+        let tok1_p = pull("openai/clip-vit-large-patch14", "tokenizer.json")?;
+        let tok2_p = pull("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", "tokenizer.json")?;
+
+        let vae = cfg.build_vae(&vae_w, &device, dtype).context("build vae")?;
+        let unet = cfg
+            .build_unet(&unet_w, &device, 4, false, dtype)
+            .context("build unet")?;
+        let clip1 = sd::build_clip_transformer(&cfg.clip, &clip1_w, &device, DType::F32)
+            .context("build clip1")?;
+        let clip2 = sd::build_clip_transformer(
+            cfg.clip2.as_ref().context("sdxl clip2 config")?,
+            &clip2_w,
+            &device,
+            DType::F32,
+        )
+        .context("build clip2")?;
+        let tok1 = Tokenizer::from_file(&tok1_p).map_err(|e| anyhow!("tokenizer1: {e}"))?;
+        let tok2 = Tokenizer::from_file(&tok2_p).map_err(|e| anyhow!("tokenizer2: {e}"))?;
+
+        Ok(Self {
+            device,
+            dtype,
+            vae_scale: model.vae_scale(),
+            cfg,
+            vae,
+            unet,
+            clip1,
+            clip2,
+            tok1,
+            tok2,
+            width: w,
+            height: h,
+        })
+    }
+
+    fn pad_id(&self, tok: &Tokenizer) -> u32 {
+        let key = self.cfg.clip.pad_with.as_deref().unwrap_or("<|endoftext|>");
+        tok.get_vocab(true).get(key).copied().unwrap_or(0)
+    }
+
+    fn encode(&self, tok: &Tokenizer, clip: &clip::ClipTextTransformer, prompt: &str, use_guide: bool) -> Result<Tensor> {
+        let max = self.cfg.clip.max_position_embeddings;
+        let pad = self.pad_id(tok);
+        let tokens = |text: &str| -> Result<Tensor> {
+            let mut ids = tok.encode(text, true).map_err(|e| anyhow!("encode: {e}"))?.get_ids().to_vec();
+            ids.truncate(max);
+            while ids.len() < max {
+                ids.push(pad);
+            }
+            Ok(Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?)
+        };
+        let cond = clip.forward(&tokens(prompt)?)?;
+        if use_guide {
+            let uncond = clip.forward(&tokens("")?)?;
+            Ok(Tensor::cat(&[uncond, cond], 0)?.to_dtype(self.dtype)?)
+        } else {
+            Ok(cond.to_dtype(self.dtype)?)
+        }
+    }
+
+    fn text_embeddings(&self, prompt: &str, use_guide: bool) -> Result<Tensor> {
+        let e1 = self.encode(&self.tok1, &self.clip1, prompt, use_guide)?;
+        let e2 = self.encode(&self.tok2, &self.clip2, prompt, use_guide)?;
+        Ok(Tensor::cat(&[e1, e2], D::Minus1)?)
+    }
+
+    fn render(&self, prompt: &str, steps: usize, guidance: f64, seed: u64) -> Result<RgbImage> {
+        self.device.set_seed(seed)?;
+        let use_guide = guidance > 1.0;
+        let text = self.text_embeddings(prompt, use_guide)?;
+
+        let mut scheduler = self.cfg.build_scheduler(steps)?;
+        let (lh, lw) = (self.height / 8, self.width / 8);
+        let mut latents = (Tensor::randn(0f32, 1f32, (1, 4, lh, lw), &self.device)?
+            * scheduler.init_noise_sigma())?
+        .to_dtype(self.dtype)?;
+
+        for &t in scheduler.timesteps().to_vec().iter() {
+            let input = if use_guide {
+                Tensor::cat(&[&latents, &latents], 0)?
+            } else {
+                latents.clone()
+            };
+            let input = scheduler.scale_model_input(input, t)?;
+            let noise = self.unet.forward(&input, t as f64, &text)?;
+            let noise = if use_guide {
+                let c = noise.chunk(2, 0)?;
+                (&c[0] + ((&c[1] - &c[0])? * guidance)?)?
+            } else {
+                noise
+            };
+            latents = scheduler.step(&noise, t, &latents)?;
+        }
+
+        let img = self.vae.decode(&(latents / self.vae_scale)?)?;
+        let img = ((img / 2.0)? + 0.5)?.clamp(0f32, 1f32)?.to_device(&Device::Cpu)?;
+        let img = (img * 255.0)?.to_dtype(DType::U8)?.i(0)?;
+        tensor_to_rgb(&img)
+    }
+}
+
+fn tensor_to_rgb(chw: &Tensor) -> Result<RgbImage> {
+    let (c, h, w) = chw.dims3()?;
+    anyhow::ensure!(c == 3, "expected 3 channels, got {c}");
+    let data = chw.permute((1, 2, 0))?.flatten_all()?.to_vec1::<u8>()?;
+    RgbImage::from_raw(w as u32, h as u32, data).ok_or_else(|| anyhow!("rgb buffer size mismatch"))
+}
+
+impl Generator for CandleSdxlGenerator {
+    fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError> {
+        let seed = req.params.base_seed + index as u64;
+        let image = self
+            .render(&req.prompt, req.params.steps as usize, req.params.guidance as f64, seed)
+            .map_err(|e| GenError::Backend(e.to_string()))?;
+        Ok(GenImage { image, seed })
+    }
+}

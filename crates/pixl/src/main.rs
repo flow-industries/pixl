@@ -82,16 +82,13 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
     let count = args
         .count
         .context("missing COUNT (usage: pixl <COUNT> <PROMPT> <OUT_DIR>)")?;
-    let prompt = args.prompt.context("missing PROMPT")?;
-    let out_dir = args.out_dir.context("missing OUT_DIR")?;
+    let prompt = args.prompt.clone().context("missing PROMPT")?;
+    let out_dir = args.out_dir.clone().context("missing OUT_DIR")?;
     let (w, h) = cli::parse_size(&args.size).map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
 
-    // The generation backend (candle/Metal SDXL + runtime-merged pixel-art &
-    // Lightning LoRAs) lands in M2; the overlapped pipeline that drives it and the
-    // pixelize pass is M4. The Generator seam already exists in `pixl-gen`.
-    println!("pixl: would generate {count} image(s) at {w}x{h}");
+    println!("pixl: generating {count} image(s) at {w}x{h}");
     println!("  prompt : {prompt:?}");
     println!("  out_dir: {}", out_dir.display());
     println!(
@@ -101,21 +98,115 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
         args.seed,
         args.seed + count as u64 - 1
     );
-    println!(
-        "  post   : {}",
-        if args.no_postprocess {
-            "raw (no pixel-snap)".to_string()
+
+    #[cfg(feature = "metal")]
+    {
+        generate_metal(&prompt, count, &out_dir, w, h, &args)
+    }
+    #[cfg(not(feature = "metal"))]
+    {
+        let _ = (w, h);
+        anyhow::bail!(
+            "this build has no generation backend; rebuild with --features metal (macOS). `pixl pixelize <img>` works without it."
+        )
+    }
+}
+
+#[cfg(feature = "metal")]
+fn generate_metal(
+    prompt: &str,
+    count: u32,
+    out_dir: &Path,
+    w: u32,
+    h: u32,
+    args: &GenerateArgs,
+) -> Result<()> {
+    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenParams, GenRequest, Generator};
+    use std::time::Instant;
+
+    eprintln!("loading SDXL-Turbo (first run downloads weights, ~7 GB, one time)…");
+    let load = Instant::now();
+    let generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h)
+        .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
+    eprintln!("ready in {:.1}s", load.elapsed().as_secs_f32());
+
+    let req = GenRequest {
+        prompt: prompt.to_string(),
+        params: GenParams {
+            width: w,
+            height: h,
+            steps: args.steps,
+            guidance: args.cfg,
+            base_seed: args.seed,
+        },
+        loras: vec![],
+    };
+    let slug = slugify(prompt);
+
+    for i in 0..count {
+        let t = Instant::now();
+        let gi = generator
+            .generate(&req, i as usize)
+            .map_err(|e| anyhow::anyhow!("generating image {i}: {e}"))?;
+        let out = if args.no_postprocess {
+            gi.image
         } else {
-            format!(
-                "{} colors{}",
-                args.colors,
-                args.pixel_size
-                    .map(|p| format!(", {p}px cells"))
-                    .unwrap_or_default()
-            )
-        }
-    );
-    anyhow::bail!(
-        "generation backend not yet wired (M2). Use `pixl pixelize <img>` to post-process existing images today."
-    );
+            postprocess(&gi.image, args)?
+        };
+        let path = out_dir.join(format!("{slug}_{i:03}.png"));
+        out.save(&path)
+            .with_context(|| format!("saving {}", path.display()))?;
+        println!(
+            "[{}/{count}] seed {} {:.1}s -> {}",
+            i + 1,
+            gi.seed,
+            t.elapsed().as_secs_f32(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "metal")]
+fn postprocess(img: &image::RgbImage, args: &GenerateArgs) -> Result<image::RgbImage> {
+    let (w, h) = img.dimensions();
+    let mut rgba = image::RgbaImage::new(w, h);
+    for (x, y, p) in img.enumerate_pixels() {
+        rgba.put_pixel(x, y, image::Rgba([p.0[0], p.0[1], p.0[2], 255]));
+    }
+    let params = PixelizeParams {
+        pixel_size: args.pixel_size,
+        max_colors: args.colors,
+        ..Default::default()
+    };
+    let (small, _report) = pixelize(&rgba, &params)?;
+    // upscale nearest so the saved file is comfortably viewable
+    let scale = (512 / small.width().max(1)).max(1);
+    Ok(image::imageops::resize(
+        &small,
+        small.width() * scale,
+        small.height() * scale,
+        FilterType::Nearest,
+    ))
+}
+
+#[cfg(feature = "metal")]
+fn slugify(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out.truncate(40);
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "img".into()
+    } else {
+        trimmed
+    }
 }
