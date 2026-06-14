@@ -99,3 +99,14 @@ pub fn delta_e76(p: Lab, q: Lab) -> f32 {
     let db = p.b - q.b;
     (dl * dl + da * da + db * db).sqrt()
 }
+
+/// Number of distinct RGB colors in a slice.
+pub(crate) fn distinct(colors: &[Rgb]) -> usize {
+    let mut v: Vec<u32> = colors
+        .iter()
+        .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v.len()
+}

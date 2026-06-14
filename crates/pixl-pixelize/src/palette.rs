@@ -17,22 +17,12 @@ impl Lcg {
     }
 }
 
-fn distinct_count(colors: &[Rgb]) -> usize {
-    let mut v: Vec<u32> = colors
-        .iter()
-        .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
-        .collect();
-    v.sort_unstable();
-    v.dedup();
-    v.len()
-}
-
 /// k-means++ over Lab; returns up to `k` RGB centroids. Deterministic for a fixed seed.
 pub fn kmeans_palette(colors: &[Rgb], k: usize, iters: usize, seed: u64) -> Vec<Rgb> {
     if colors.is_empty() {
         return Vec::new();
     }
-    let k = k.min(distinct_count(colors)).max(1);
+    let k = k.min(crate::color::distinct(colors)).max(1);
     let pts: Vec<Lab> = colors.iter().map(|&c| rgb_to_lab(c)).collect();
     let mut rng = Lcg::new(seed);
 

@@ -2,7 +2,7 @@
 
 use crate::color::{lab_to_rgb, Lab, Rgb};
 use crate::signal::LabField;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Running (sum_l, sum_a, sum_b, count) for one coarse Lab bin.
 type BinAccum = (f32, f32, f32, u32);
@@ -17,7 +17,7 @@ pub fn collapse_cell(
     y1: usize,
     bin: f32,
 ) -> Option<Rgb> {
-    let mut bins: HashMap<(i32, i32, i32), BinAccum> = HashMap::new();
+    let mut bins: BTreeMap<(i32, i32, i32), BinAccum> = BTreeMap::new();
     for y in y0..y1 {
         for x in x0..x1 {
             if !f.is_opaque(x, y) {

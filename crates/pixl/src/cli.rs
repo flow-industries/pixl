@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -49,6 +49,16 @@ pub enum ModelsCmd {
     Path,
 }
 
+/// Base diffusion model.
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+pub enum ModelArg {
+    /// Few-step, CFG-free, fast.
+    #[default]
+    Turbo,
+    /// Full SDXL base (needs more steps).
+    Sdxl,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct GenerateArgs {
     /// How many images to generate.
@@ -58,9 +68,9 @@ pub struct GenerateArgs {
     /// Output directory.
     pub out_dir: Option<PathBuf>,
 
-    /// Base model: `turbo` (fast, default) or `sdxl` (full, needs more steps).
-    #[arg(long, default_value = "turbo")]
-    pub model: String,
+    /// Base model.
+    #[arg(long, value_enum, default_value_t = ModelArg::Turbo)]
+    pub model: ModelArg,
     /// Palette size for the post-process pass (0 = keep all distinct cell colors).
     #[arg(short = 'c', long, default_value_t = 16)]
     pub colors: u16,

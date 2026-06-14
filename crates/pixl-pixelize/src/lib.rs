@@ -16,7 +16,7 @@ pub use color::Rgb;
 use color::rgb_to_lab;
 use image::{RgbImage, RgbaImage};
 use rayon::prelude::*;
-use signal::{change_signal, Axis, LabField};
+use signal::{change_signal, detrend, Axis, LabField};
 
 #[derive(Clone, Debug)]
 pub struct PixelizeParams {
@@ -113,8 +113,8 @@ pub fn pixelize(
         .map(|idx| {
             let cx = idx % nx;
             let cy = idx / nx;
-            let x1 = bx[cx + 1].max(bx[cx] + 1);
-            let y1 = by[cy + 1].max(by[cy] + 1);
+            let x1 = bx[cx + 1];
+            let y1 = by[cy + 1];
             collapse::collapse_cell(&field, bx[cx], x1, by[cy], y1, COLLAPSE_BIN)
         })
         .collect();
@@ -145,7 +145,7 @@ pub fn pixelize(
     }
 
     let palette_len = if palette.is_empty() {
-        distinct(&opaque_colors) as u16
+        color::distinct(&opaque_colors) as u16
     } else {
         palette.len() as u16
     };
@@ -161,16 +161,6 @@ pub fn pixelize(
     ))
 }
 
-fn distinct(colors: &[Rgb]) -> usize {
-    let mut v: Vec<u32> = colors
-        .iter()
-        .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
-        .collect();
-    v.sort_unstable();
-    v.dedup();
-    v.len()
-}
-
 /// Returns `((period_x, phase_x), (period_y, phase_y), low_confidence)` with
 /// phases already in column-boundary space (detected edge-phase + 1).
 fn decide_grid(field: &LabField, params: &PixelizeParams) -> ((f32, f32), (f32, f32), bool) {
@@ -178,17 +168,17 @@ fn decide_grid(field: &LabField, params: &PixelizeParams) -> ((f32, f32), (f32, 
         let p = p.max(1) as f32;
         return ((p, 0.0), (p, 0.0), false);
     }
-    let sx = change_signal(field, Axis::X);
-    let sy = change_signal(field, Axis::Y);
-    let dx = grid::detect_axis(&sx, DETREND_WINDOW);
-    let dy = grid::detect_axis(&sy, DETREND_WINDOW);
+    let sx = detrend(&change_signal(field, Axis::X), DETREND_WINDOW);
+    let sy = detrend(&change_signal(field, Axis::Y), DETREND_WINDOW);
+    let dx = grid::detect_axis(&sx);
+    let dy = grid::detect_axis(&sy);
 
     // Borrow a period onto an axis and recompute that axis's phase under it (its
     // own phase was folded modulo a different period and would mis-align).
-    let borrow = |sig: &[f32], period: f32| {
+    let borrow = |det: &[f32], period: f32| {
         (
             period,
-            grid::phase_for_period(sig, DETREND_WINDOW, period as usize) as f32 + 1.0,
+            grid::phase_for_period(det, period as usize) as f32 + 1.0,
         )
     };
 

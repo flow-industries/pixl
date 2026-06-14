@@ -18,20 +18,38 @@ mod sdxl;
 #[cfg(feature = "metal")]
 pub use sdxl::{BaseModel, CandleSdxlGenerator, LoraRef};
 
+/// Cache root (`$XDG_CACHE_HOME` or `$HOME/.cache`, else a temp dir — never
+/// CWD-relative). `with_xdg` lets callers that must follow a tool's own contract
+/// (e.g. hf-hub, which ignores `XDG_CACHE_HOME`) opt out of the XDG override.
+fn cache_root(with_xdg: bool) -> PathBuf {
+    if with_xdg {
+        if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
+            return PathBuf::from(x);
+        }
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".cache")
+}
+
 /// Directory holding cached merged-UNet safetensors (`~/.cache/pixl/merged`).
 pub fn merged_cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir); // absolute fallback, never CWD-relative
-    base.join("pixl").join("merged")
+    cache_root(true).join("pixl").join("merged")
+}
+
+/// Directory where hf-hub stores downloaded weights (`$HF_HOME/hub` or
+/// `~/.cache/huggingface/hub`). hf-hub does not honor `XDG_CACHE_HOME`.
+pub fn hf_cache_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HF_HOME") {
+        return PathBuf::from(home).join("hub");
+    }
+    cache_root(false).join("huggingface").join("hub")
 }
 
 /// Sampler / output parameters shared by all backends.
 #[derive(Clone, Debug)]
 pub struct GenParams {
-    pub width: u32,
-    pub height: u32,
     pub steps: u32,
     pub guidance: f32,
     /// Per-image seed is `base_seed + index`.
@@ -41,8 +59,6 @@ pub struct GenParams {
 impl Default for GenParams {
     fn default() -> Self {
         Self {
-            width: 1024,
-            height: 1024,
             steps: 8,
             guidance: 1.0,
             base_seed: 0,
@@ -50,19 +66,11 @@ impl Default for GenParams {
     }
 }
 
-/// A LoRA to merge into the base UNet at load time (runtime merge, see M3).
-#[derive(Clone, Debug)]
-pub struct LoraSpec {
-    pub path: PathBuf,
-    pub scale: f32,
-}
-
 /// One generation request; the backend renders `index` to vary the seed.
 #[derive(Clone, Debug)]
 pub struct GenRequest {
     pub prompt: String,
     pub params: GenParams,
-    pub loras: Vec<LoraSpec>,
 }
 
 /// A rendered image plus the seed that produced it (for reproducibility).

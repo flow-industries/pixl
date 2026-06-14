@@ -5,9 +5,7 @@
 //! the change-signal modulo the true period concentrates ~all edge energy into a
 //! single phase bin. Harmonics (2x, 3x, ...) scatter that energy across several
 //! bins, so the *largest* period whose fold concentrates the energy is the
-//! fundamental.
-
-use crate::signal::detrend;
+//! fundamental. Inputs are the per-axis change signal after detrending.
 
 #[derive(Clone, Copy, Debug)]
 pub struct AxisGrid {
@@ -24,14 +22,14 @@ const WINDOW_TOL: usize = 1; // phase-bin half-width counted as "covered"
 /// instead of letting detection fail into the fallback.
 const MIN_PERIOD: usize = 2 * WINDOW_TOL + 2;
 
-/// Detect the grid for one axis. Returns the largest period whose modular fold
-/// gathers at least `COVERAGE_THRESHOLD` of the total edge energy into one phase.
-pub fn detect_axis(signal: &[f32], detrend_window: usize) -> Option<AxisGrid> {
-    if signal.len() < 8 {
+/// Detect the grid for one axis from its (already detrended) change signal.
+/// Returns the largest period whose modular fold gathers at least
+/// `COVERAGE_THRESHOLD` of the total edge energy into one phase.
+pub fn detect_axis(det: &[f32]) -> Option<AxisGrid> {
+    let len = det.len();
+    if len < 8 {
         return None;
     }
-    let det = detrend(signal, detrend_window);
-    let len = det.len();
     let total: f32 = det.iter().sum();
     if total <= 1e-6 {
         return None;
@@ -63,15 +61,11 @@ pub fn detect_axis(signal: &[f32], detrend_window: usize) -> Option<AxisGrid> {
     best_any.map(|(t, p, cov)| grid_from(t, p, cov))
 }
 
-/// Argmax phase bin of the fold of `signal` at a given `period`. Used when a
-/// strong axis lends its period to a weak axis — the weak axis's own phase was
-/// found under a different period and must be recomputed for the borrowed one.
-pub fn phase_for_period(signal: &[f32], detrend_window: usize, period: usize) -> usize {
-    if period < 2 {
-        return 0;
-    }
-    let det = detrend(signal, detrend_window);
-    if det.is_empty() {
+/// Argmax phase bin of the fold of a detrended signal at a given `period`. Used
+/// when a strong axis lends its period to a weak axis — the weak axis's own phase
+/// was found under a different period and must be recomputed for the borrowed one.
+pub fn phase_for_period(det: &[f32], period: usize) -> usize {
+    if period < 2 || det.is_empty() {
         return 0;
     }
     let mut hist = vec![0.0f32; period];

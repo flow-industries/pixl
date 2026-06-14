@@ -147,9 +147,9 @@ fn generate_metal(
     if !args.lora_weight.is_finite() {
         anyhow::bail!("--lora-weight must be a finite number");
     }
-    let model = match args.model.to_lowercase().as_str() {
-        "sdxl" | "base" => BaseModel::Sdxl,
-        _ => BaseModel::SdxlTurbo,
+    let model = match args.model {
+        cli::ModelArg::Sdxl => BaseModel::Sdxl,
+        cli::ModelArg::Turbo => BaseModel::SdxlTurbo,
     };
     if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) && !args.quiet {
         eprintln!("note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
@@ -197,13 +197,10 @@ fn generate_metal(
     let req = GenRequest {
         prompt: prompt.to_string(),
         params: GenParams {
-            width: w,
-            height: h,
             steps: args.steps,
             guidance: args.cfg,
             base_seed: args.seed,
         },
-        loras: vec![],
     };
     let slug = slugify(prompt);
     let jobs = if args.jobs > 0 {
@@ -347,10 +344,10 @@ fn postprocess(
     args: &GenerateArgs,
 ) -> Result<(image::RgbImage, pixl_pixelize::PixelizeReport)> {
     let (w, h) = img.dimensions();
-    let mut rgba = image::RgbaImage::new(w, h);
-    for (x, y, p) in img.enumerate_pixels() {
-        rgba.put_pixel(x, y, image::Rgba([p.0[0], p.0[1], p.0[2], 255]));
-    }
+    let rgba = image::RgbaImage::from_fn(w, h, |x, y| {
+        let p = img.get_pixel(x, y).0;
+        image::Rgba([p[0], p[1], p[2], 255])
+    });
     let params = PixelizeParams {
         pixel_size: args.pixel_size,
         max_colors: args.colors,
@@ -392,7 +389,7 @@ fn run_models(action: ModelsCmd) -> Result<()> {
     match action {
         ModelsCmd::Path => {
             println!("merged cache: {}", merged.display());
-            println!("hf weights  : {}", hf_cache_dir().display());
+            println!("hf weights  : {}", pixl_gen::hf_cache_dir().display());
         }
         ModelsCmd::Ls => {
             let (files, total) = list_merged(&merged);
@@ -404,7 +401,7 @@ fn run_models(action: ModelsCmd) -> Result<()> {
                 }
                 println!("  total {} in {}", human(total), merged.display());
             }
-            println!("hf weights cache: {}", hf_cache_dir().display());
+            println!("hf weights cache: {}", pixl_gen::hf_cache_dir().display());
         }
         ModelsCmd::Clear { yes } => {
             let (files, total) = list_merged(&merged);
@@ -484,18 +481,6 @@ fn list_merged(dir: &Path) -> (Vec<(String, u64)>, u64) {
     }
     out.sort();
     (out, total)
-}
-
-fn hf_cache_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("HF_HOME") {
-        return PathBuf::from(home).join("hub");
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".cache")
-        .join("huggingface")
-        .join("hub")
 }
 
 fn human(bytes: u64) -> String {
