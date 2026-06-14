@@ -1,9 +1,9 @@
 # pixl — Design & Implementation Plan
 
-> **Status:** Active. M0–M4 are implemented and green — `pixl N "prompt" ./out`
-> generates on Metal (SDXL + runtime-merged pixel-art LoRA), pixelizes via an
-> overlapped pipeline with per-image progress, and saves true pixel art. M5
-> (first-run weight UX, packaging) is planned.
+> **Status:** Active. **All milestones (M0–M5) are implemented and green.**
+> `pixl N "prompt" ./out` generates on Metal (SDXL + runtime-merged pixel-art
+> LoRA), pixelizes via an overlapped pipeline with per-image progress, saves true
+> pixel art, and ships cache management + packaging.
 >
 > This plan was produced by a multi-agent research+design pass and hardened by
 > two adversarial verifiers (candle/LoRA feasibility; pixelize-algorithm
@@ -25,7 +25,47 @@ limited-palette quantize) — `pixl 100 "stardew valley style house" ./`.**
 | M2 — candle SDXL, one image on Metal | **done** |
 | M3 — runtime LoRA merge (sgm→diffusers key map) | **done** |
 | M4 — overlapped generate→pixelize→save pipeline + progress UX | planned |
-| M5 — first-run weights UX, packaging | planned |
+| M5 — weights UX, `pixl models` cache mgmt, packaging | **done** |
+
+### Post-M5 adversarial review — fixes applied
+
+A 5-reviewer + verifier pass (0 critical, 1 high, several mediums confirmed) ran
+before commit; the real findings are fixed:
+
+- **[high] degenerate grid** — tiny / near-uniform images fabricated a confident
+  2–3px grid because the coverage window spans the whole fold at small periods.
+  Fixed by a `MIN_PERIOD` floor **and** normalizing coverage against the uniform
+  baseline `w/t`, so only genuine concentration scores high; near-uniform inputs
+  now fall back. New golden test covers it.
+- **pixelize** — borrowed-axis phase is recomputed under the borrowed period (was
+  carried from a different modular space); NaN-safe `total_cmp` in detrend.
+- **cache safety** — `models clear` writes its prompt to stderr, refuses on a
+  non-TTY without `--yes`, structurally verifies the path is `…/pixl/merged` and
+  not a symlink, and removes known files then the dir (not a blind `remove_dir_all`);
+  cache dirs use XDG/HOME/temp (never CWD-relative when HOME is unset).
+- **LoRA merge** — per-process temp file (no concurrent-merge corruption), guards
+  on rank/finite-scale and non-2D weights (skip, don't poison/​panic), honest
+  cache-key doc (path+scale, not content).
+- **pipeline** — summary counts images actually `saved` (correct under Ctrl-C);
+  fail-fast uses a distinct flag (real failures exit 1 + `bail`, not the Ctrl-C
+  130/"cancelled"); worker panics are caught per-image and Mutex poisoning is
+  tolerated, so one bad image can't abort the batch's accounting.
+- **generation defaults** — `--size` defaults to **512²** (Turbo-native; 1024 ran
+  Turbo at 4× cost) and is validated (positive, ÷8) for a clean error not a candle
+  panic; over-long prompts keep a terminator token; `--cfg>1` on Turbo warns;
+  `--lora-weight` must be finite.
+
+### M5 results — UX, cache management, packaging
+
+- **First-run download progress** via `hf-hub` `ApiBuilder::with_progress(true)`.
+- **`--model turbo|sdxl`** selects the base model (Turbo default).
+- **`pixl models ls | clear | path`** — list the merged-UNet cache with sizes,
+  clear it (confirmation prompt + a refuse-if-path-unexpected guard; never
+  touches the shared HF weights), and print cache locations. Un-gated (works in
+  the GPU-free build). Verified without a GPU.
+- **Packaging:** `cargo install --path crates/pixl [--features metal]`, a
+  `justfile` (build / build-metal / test / lint / install / demo), and a rewritten
+  README (install, usage, resource throttling).
 
 ### M4 results — overlapped pipeline + progress
 

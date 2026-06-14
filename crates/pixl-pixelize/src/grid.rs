@@ -1,11 +1,11 @@
 //! Period + phase detection via modular folding (coverage scoring), and grid
 //! reconstruction.
 //!
-//! Key idea: real grid boundaries always sit at multiples of the true cell size,
-//! so folding the change-signal modulo the true period concentrates ~all edge
-//! energy into a single phase bin. Harmonics (2x, 3x, ...) scatter that energy
-//! across several bins, so the *largest* period whose fold concentrates the
-//! energy is the fundamental.
+//! Real grid boundaries always sit at multiples of the true cell size, so folding
+//! the change-signal modulo the true period concentrates ~all edge energy into a
+//! single phase bin. Harmonics (2x, 3x, ...) scatter that energy across several
+//! bins, so the *largest* period whose fold concentrates the energy is the
+//! fundamental.
 
 use crate::signal::detrend;
 
@@ -19,15 +19,14 @@ pub struct AxisGrid {
 
 const COVERAGE_THRESHOLD: f32 = 0.78;
 const WINDOW_TOL: usize = 1; // phase-bin half-width counted as "covered"
+/// Smallest period considered. Below `2*WINDOW_TOL+2` the coverage window would
+/// span the whole fold and score 1.0 for any signal, fabricating a 2-3px grid
+/// instead of letting detection fail into the fallback.
+const MIN_PERIOD: usize = 2 * WINDOW_TOL + 2;
 
 /// Detect the grid for one axis. Returns the largest period whose modular fold
 /// gathers at least `COVERAGE_THRESHOLD` of the total edge energy into one phase.
-pub fn detect_axis(
-    signal: &[f32],
-    detrend_window: usize,
-    _phase_step: f32,
-    _unused: usize,
-) -> Option<AxisGrid> {
+pub fn detect_axis(signal: &[f32], detrend_window: usize) -> Option<AxisGrid> {
     if signal.len() < 8 {
         return None;
     }
@@ -37,17 +36,23 @@ pub fn detect_axis(
     if total <= 1e-6 {
         return None;
     }
-    let min_p = 2usize;
-    let max_p = (len / 4).max(min_p + 1);
+    let max_p = len / 4;
+    if max_p < MIN_PERIOD {
+        return None;
+    }
 
     let mut best_any: Option<(usize, usize, f32)> = None; // period, phase, coverage
-    for t in (min_p..=max_p).rev() {
+    for t in (MIN_PERIOD..=max_p).rev() {
         let mut hist = vec![0.0f32; t];
         for (k, &v) in det.iter().enumerate() {
             hist[k % t] += v;
         }
         let (peak, covered) = fold_peak(&hist, WINDOW_TOL);
-        let coverage = covered / total;
+        // Normalize against the uniform-energy baseline (a width-w window over t
+        // bins covers w/t of uniform energy); only genuine concentration scores high.
+        let w = (2 * WINDOW_TOL + 1).min(t) as f32;
+        let floor = w / t as f32;
+        let coverage = (((covered / total) - floor) / (1.0 - floor)).max(0.0);
         if best_any.is_none_or(|b| coverage > b.2) {
             best_any = Some((t, peak, coverage));
         }
@@ -56,6 +61,24 @@ pub fn detect_axis(
         }
     }
     best_any.map(|(t, p, cov)| grid_from(t, p, cov))
+}
+
+/// Argmax phase bin of the fold of `signal` at a given `period`. Used when a
+/// strong axis lends its period to a weak axis — the weak axis's own phase was
+/// found under a different period and must be recomputed for the borrowed one.
+pub fn phase_for_period(signal: &[f32], detrend_window: usize, period: usize) -> usize {
+    if period < 2 {
+        return 0;
+    }
+    let det = detrend(signal, detrend_window);
+    if det.is_empty() {
+        return 0;
+    }
+    let mut hist = vec![0.0f32; period];
+    for (k, &v) in det.iter().enumerate() {
+        hist[k % period] += v;
+    }
+    fold_peak(&hist, WINDOW_TOL).0
 }
 
 fn grid_from(period: usize, phase: usize, coverage: f32) -> AxisGrid {

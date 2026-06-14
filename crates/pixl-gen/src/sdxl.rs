@@ -12,7 +12,7 @@ use candle_nn::Module;
 use candle_transformers::models::stable_diffusion::{
     self as sd, clip, vae::AutoEncoderKL, StableDiffusionConfig,
 };
-use hf_hub::api::sync::Api;
+use hf_hub::api::sync::ApiBuilder;
 use image::RgbImage;
 use tokenizers::Tokenizer;
 
@@ -79,7 +79,10 @@ impl CandleSdxlGenerator {
         let cfg = model.config(w, h);
         let repo = model.repo();
 
-        let api = Api::new().context("hf-hub api")?;
+        let api = ApiBuilder::new()
+            .with_progress(true)
+            .build()
+            .context("hf-hub api")?;
         let pull = |r: &str, f: &str| -> Result<std::path::PathBuf> {
             api.model(r.to_string())
                 .get(f)
@@ -88,7 +91,10 @@ impl CandleSdxlGenerator {
 
         let unet_w = pull(repo, "unet/diffusion_pytorch_model.fp16.safetensors")?;
         // f16 SDXL VAE renders black images (candle #1060) -> fp16-fix VAE is mandatory.
-        let vae_w = pull("madebyollin/sdxl-vae-fp16-fix", "diffusion_pytorch_model.safetensors")?;
+        let vae_w = pull(
+            "madebyollin/sdxl-vae-fp16-fix",
+            "diffusion_pytorch_model.safetensors",
+        )?;
         let clip1_w = pull(repo, "text_encoder/model.fp16.safetensors")?;
         let clip2_w = pull(repo, "text_encoder_2/model.fp16.safetensors")?;
         let tok1_p = pull("openai/clip-vit-large-patch14", "tokenizer.json")?;
@@ -102,7 +108,7 @@ impl CandleSdxlGenerator {
             for l in loras {
                 specs.push((pull(&l.repo, &l.file)?, l.scale));
             }
-            let cache = lora_cache_dir();
+            let cache = crate::merged_cache_dir();
             crate::lora::merged_unet_path(&unet_w, &specs, &cache)
                 .map_err(|e| anyhow!("lora merge: {e}"))?
         };
@@ -158,7 +164,13 @@ impl CandleSdxlGenerator {
                 .map_err(|e| anyhow!("encode: {e}"))?
                 .get_ids()
                 .to_vec();
-            ids.truncate(max);
+            if ids.len() > max {
+                ids.truncate(max);
+                // keep a terminator in the final slot rather than a bare content token
+                if let Some(last) = ids.last_mut() {
+                    *last = pad;
+                }
+            }
             while ids.len() < max {
                 ids.push(pad);
             }
@@ -213,17 +225,12 @@ impl CandleSdxlGenerator {
         }
 
         let img = self.vae.decode(&(latents / self.vae_scale)?)?;
-        let img = ((img / 2.0)? + 0.5)?.clamp(0f32, 1f32)?.to_device(&Device::Cpu)?;
+        let img = ((img / 2.0)? + 0.5)?
+            .clamp(0f32, 1f32)?
+            .to_device(&Device::Cpu)?;
         let img = (img * 255.0)?.to_dtype(DType::U8)?.i(0)?;
         tensor_to_rgb(&img)
     }
-}
-
-fn lora_cache_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join(".cache").join("pixl").join("merged")
 }
 
 fn tensor_to_rgb(chw: &Tensor) -> Result<RgbImage> {
@@ -237,7 +244,12 @@ impl Generator for CandleSdxlGenerator {
     fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError> {
         let seed = req.params.base_seed + index as u64;
         let image = self
-            .render(&req.prompt, req.params.steps as usize, req.params.guidance as f64, seed)
+            .render(
+                &req.prompt,
+                req.params.steps as usize,
+                req.params.guidance as f64,
+                seed,
+            )
             .map_err(|e| GenError::Backend(e.to_string()))?;
         Ok(GenImage { image, seed })
     }

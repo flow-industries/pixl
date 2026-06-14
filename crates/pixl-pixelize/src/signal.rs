@@ -78,7 +78,7 @@ pub fn detrend(signal: &[f32], window: usize) -> Vec<f32> {
         let hi = (i + half + 1).min(n);
         buf.clear();
         buf.extend_from_slice(&signal[lo..hi]);
-        buf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        buf.sort_by(f32::total_cmp);
         let med = buf[buf.len() / 2];
         out[i] = (signal[i] - med).max(0.0);
     }

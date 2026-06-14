@@ -203,3 +203,20 @@ fn idempotent_on_clean_sprite() {
     let d = mean_rgb_delta(&first, &second);
     assert!(d < 6.0, "idempotence delta {d}");
 }
+
+#[test]
+fn tiny_lowdetail_falls_back_not_bogus_grid() {
+    // a small, near-uniform image has no real grid: detection must fail into the
+    // fallback (low_confidence) instead of fabricating a 2-3px grid.
+    let mut img = RgbaImage::new(40, 40);
+    for p in img.pixels_mut() {
+        *p = Rgba([90, 120, 70, 255]);
+    }
+    let noisy = add_noise(&img, 3, 4);
+    let (_out, rep) = pixelize(&noisy, &params(8, 16)).unwrap();
+    assert!(
+        rep.low_confidence,
+        "near-uniform image should fall back, got confident cell {:?}",
+        rep.detected_cell_px
+    );
+}

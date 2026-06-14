@@ -18,6 +18,15 @@ mod sdxl;
 #[cfg(feature = "metal")]
 pub use sdxl::{BaseModel, CandleSdxlGenerator, LoraRef};
 
+/// Directory holding cached merged-UNet safetensors (`~/.cache/pixl/merged`).
+pub fn merged_cache_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir); // absolute fallback, never CWD-relative
+    base.join("pixl").join("merged")
+}
+
 /// Sampler / output parameters shared by all backends.
 #[derive(Clone, Debug)]
 pub struct GenParams {

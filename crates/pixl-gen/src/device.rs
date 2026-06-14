@@ -23,7 +23,13 @@ mod tests {
         let a = Tensor::randn(0f32, 1f32, (64, 64), &dev).unwrap();
         let b = Tensor::randn(0f32, 1f32, (64, 64), &dev).unwrap();
         let c = a.matmul(&b).unwrap().to_dtype(DType::F32).unwrap();
-        let host = c.to_dtype(DType::F32).unwrap().flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let host = c
+            .to_dtype(DType::F32)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
         assert_eq!(host.len(), 64 * 64);
         assert!(host.iter().any(|v| *v != 0.0), "matmul produced all zeros");
     }

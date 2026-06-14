@@ -1,10 +1,11 @@
 mod cli;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Command, GenerateArgs, PixelizeArgs};
+use cli::{Cli, Command, GenerateArgs, ModelsCmd, PixelizeArgs};
 use image::imageops::FilterType;
 use pixl_pixelize::{pixelize, PixelizeParams};
 
@@ -12,6 +13,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Pixelize(args)) => run_pixelize(args),
+        Some(Command::Models { action }) => run_models(action),
         Some(Command::Gen(args)) => run_generate(args),
         None => run_generate(cli.generate),
     }
@@ -102,6 +104,14 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
 }
 
 #[cfg(feature = "metal")]
+fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: String) {
+    failures
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((i, msg));
+}
+
+#[cfg(feature = "metal")]
 fn generate_metal(
     prompt: &str,
     count: u32,
@@ -111,7 +121,9 @@ fn generate_metal(
     args: &GenerateArgs,
 ) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef};
+    use pixl_gen::{
+        BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef,
+    };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -132,7 +144,17 @@ fn generate_metal(
             eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
         }
     }
-    let mut generator = CandleSdxlGenerator::load(BaseModel::SdxlTurbo, w, h, &loras)
+    if !args.lora_weight.is_finite() {
+        anyhow::bail!("--lora-weight must be a finite number");
+    }
+    let model = match args.model.to_lowercase().as_str() {
+        "sdxl" | "base" => BaseModel::Sdxl,
+        _ => BaseModel::SdxlTurbo,
+    };
+    if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) && !args.quiet {
+        eprintln!("note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
+    }
+    let mut generator = CandleSdxlGenerator::load(model, w, h, &loras)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
 
     let draw = if args.quiet {
@@ -187,11 +209,15 @@ fn generate_metal(
     let jobs = if args.jobs > 0 {
         args.jobs
     } else {
-        std::thread::available_parallelism().map(|n| n.get().min(2)).unwrap_or(1)
+        std::thread::available_parallelism()
+            .map(|n| n.get().min(2))
+            .unwrap_or(1)
     };
 
     let (tx, rx) = crossbeam_channel::bounded::<(usize, GenImage)>(jobs);
     let failures: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let saved = Arc::new(AtomicUsize::new(0));
+    let abort = Arc::new(AtomicBool::new(false)); // fail-fast (distinct from Ctrl-C cancel)
     let started = Instant::now();
 
     std::thread::scope(|scope| {
@@ -202,15 +228,21 @@ fn generate_metal(
             let out_dir = out_dir.to_path_buf();
             let slug = slug.clone();
             let args = args.clone();
+            let saved = saved.clone();
             scope.spawn(move || {
                 for (i, gi) in rx.iter() {
-                    match pixelize_and_save(gi, i, &out_dir, &slug, &args) {
-                        Ok(json) => {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        pixelize_and_save(gi, i, &out_dir, &slug, &args)
+                    }));
+                    match r {
+                        Ok(Ok(json)) => {
+                            saved.fetch_add(1, Ordering::Relaxed);
                             if args.json {
                                 println!("{json}");
                             }
                         }
-                        Err(e) => failures.lock().unwrap().push((i, e.to_string())),
+                        Ok(Err(e)) => push_fail(&failures, i, e.to_string()),
+                        Err(_) => push_fail(&failures, i, "panicked during pixelize/save".into()),
                     }
                     overall.inc(1);
                 }
@@ -219,7 +251,7 @@ fn generate_metal(
         drop(rx);
 
         for i in 0..count as usize {
-            if cancel.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) || abort.load(Ordering::Relaxed) {
                 break;
             }
             cur.store(i, Ordering::Relaxed);
@@ -230,9 +262,9 @@ fn generate_metal(
                     }
                 }
                 Err(e) => {
-                    failures.lock().unwrap().push((i, e.to_string()));
+                    push_fail(&failures, i, e.to_string());
                     if args.fail_fast {
-                        cancel.store(true, Ordering::Relaxed);
+                        abort.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -244,14 +276,18 @@ fn generate_metal(
     gen_spin.finish_and_clear();
     overall.finish_and_clear();
 
-    let fails = failures.lock().unwrap();
-    let ok = count as usize - fails.len();
+    let fails = failures.lock().unwrap_or_else(|e| e.into_inner());
+    let ok = saved.load(Ordering::Relaxed);
     let cancelled = cancel.load(Ordering::Relaxed);
     if !args.quiet {
         let secs = started.elapsed().as_secs_f32();
         eprintln!(
-            "{} {ok}/{count} image(s) · {secs:.1}s · {:.1}s/img{}{} -> {}",
-            if fails.is_empty() && !cancelled { "✓" } else { "•" },
+            "{} {ok}/{count} saved · {secs:.1}s · {:.1}s/img{}{} -> {}",
+            if fails.is_empty() && !cancelled {
+                "✓"
+            } else {
+                "•"
+            },
             if ok > 0 { secs / ok as f32 } else { 0.0 },
             if cancelled { " · cancelled" } else { "" },
             if fails.is_empty() {
@@ -348,5 +384,131 @@ fn slugify(s: &str) -> String {
         "img".into()
     } else {
         trimmed
+    }
+}
+
+fn run_models(action: ModelsCmd) -> Result<()> {
+    let merged = pixl_gen::merged_cache_dir();
+    match action {
+        ModelsCmd::Path => {
+            println!("merged cache: {}", merged.display());
+            println!("hf weights  : {}", hf_cache_dir().display());
+        }
+        ModelsCmd::Ls => {
+            let (files, total) = list_merged(&merged);
+            if files.is_empty() {
+                println!("no merged-UNet cache yet ({})", merged.display());
+            } else {
+                for (name, sz) in &files {
+                    println!("  {:>9}  {name}", human(*sz));
+                }
+                println!("  total {} in {}", human(total), merged.display());
+            }
+            println!("hf weights cache: {}", hf_cache_dir().display());
+        }
+        ModelsCmd::Clear { yes } => {
+            let (files, total) = list_merged(&merged);
+            if files.is_empty() {
+                println!("nothing to clear ({})", merged.display());
+                return Ok(());
+            }
+            // structural guard: the path must end in exactly .../pixl/merged and not be a symlink
+            let tail: Vec<String> = merged
+                .components()
+                .rev()
+                .take(2)
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            if tail != ["merged", "pixl"] {
+                anyhow::bail!(
+                    "refusing to clear unexpected cache path {}",
+                    merged.display()
+                );
+            }
+            if std::fs::symlink_metadata(&merged)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                anyhow::bail!(
+                    "cache path is a symlink, refusing to clear {}",
+                    merged.display()
+                );
+            }
+            if !yes {
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!(
+                        "not a terminal; pass --yes to clear {} ({})",
+                        merged.display(),
+                        human(total)
+                    );
+                }
+                eprint!(
+                    "delete {} merged file(s) ({}) from {}? [y/N] ",
+                    files.len(),
+                    human(total),
+                    merged.display()
+                );
+                std::io::Write::flush(&mut std::io::stderr())?;
+                let mut line = String::new();
+                if std::io::stdin().read_line(&mut line).is_err()
+                    || !line.trim().eq_ignore_ascii_case("y")
+                {
+                    println!("aborted");
+                    return Ok(());
+                }
+            }
+            // remove only the known cache files, then the now-empty dir
+            for (name, _) in &files {
+                let f = merged.join(name);
+                std::fs::remove_file(&f).with_context(|| format!("removing {}", f.display()))?;
+            }
+            let _ = std::fs::remove_dir(&merged);
+            println!("cleared {} ({})", human(total), merged.display());
+        }
+    }
+    Ok(())
+}
+
+fn list_merged(dir: &Path) -> (Vec<(String, u64)>, u64) {
+    let mut out = Vec::new();
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if let Ok(md) = e.metadata() {
+                if md.is_file() {
+                    total += md.len();
+                    out.push((e.file_name().to_string_lossy().into_owned(), md.len()));
+                }
+            }
+        }
+    }
+    out.sort();
+    (out, total)
+}
+
+fn hf_cache_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HF_HOME") {
+        return PathBuf::from(home).join("hub");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".cache")
+        .join("huggingface")
+        .join("hub")
+}
+
+fn human(bytes: u64) -> String {
+    const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut b = bytes as f64;
+    let mut i = 0;
+    while b >= 1024.0 && i < U.len() - 1 {
+        b /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{b:.1} {}", U[i])
     }
 }

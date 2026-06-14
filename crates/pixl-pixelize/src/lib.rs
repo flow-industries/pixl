@@ -1,8 +1,8 @@
 //! Detect the true pixel grid of an AI-generated "pixel-art-style" image and
 //! snap it to a clean, limited-palette sprite.
 //!
-//! Pipeline: per-axis perceptual change signal -> comb-score period & phase
-//! (edge energy minus mid-cell energy, so harmonics lose) -> dominant-color
+//! Pipeline: per-axis perceptual change signal -> modular-fold coverage period
+//! detection (harmonics scatter the fold, the fundamental wins) -> dominant-color
 //! cell collapse -> Lab k-means palette. Pure CPU, deterministic, GPU-free.
 
 mod collapse;
@@ -29,6 +29,7 @@ pub struct PixelizeParams {
     /// Border pixels trimmed before detection (AI borders are often noisy).
     pub trim_border: u32,
     /// Alpha at or above this is opaque; below is treated as transparent.
+    /// If this leaves an image with no opaque pixels, the result is an all-black sprite.
     pub alpha_threshold: u8,
     /// Seed for the deterministic k-means init.
     pub kmeans_seed: u64,
@@ -68,8 +69,6 @@ pub enum PixelizeError {
 const LOW_CONF: f32 = 3.0;
 const FAIL_CONF: f32 = 1.5;
 const DETREND_WINDOW: usize = 9;
-const PHASE_STEP: f32 = 0.5;
-const TOP_CANDIDATES: usize = 5;
 const COLLAPSE_BIN: f32 = 12.0;
 const KMEANS_ITERS: usize = 16;
 
@@ -181,8 +180,17 @@ fn decide_grid(field: &LabField, params: &PixelizeParams) -> ((f32, f32), (f32, 
     }
     let sx = change_signal(field, Axis::X);
     let sy = change_signal(field, Axis::Y);
-    let dx = grid::detect_axis(&sx, DETREND_WINDOW, PHASE_STEP, TOP_CANDIDATES);
-    let dy = grid::detect_axis(&sy, DETREND_WINDOW, PHASE_STEP, TOP_CANDIDATES);
+    let dx = grid::detect_axis(&sx, DETREND_WINDOW);
+    let dy = grid::detect_axis(&sy, DETREND_WINDOW);
+
+    // Borrow a period onto an axis and recompute that axis's phase under it (its
+    // own phase was folded modulo a different period and would mis-align).
+    let borrow = |sig: &[f32], period: f32| {
+        (
+            period,
+            grid::phase_for_period(sig, DETREND_WINDOW, period as usize) as f32 + 1.0,
+        )
+    };
 
     match (dx, dy) {
         (Some(a), Some(b)) => {
@@ -190,23 +198,22 @@ fn decide_grid(field: &LabField, params: &PixelizeParams) -> ((f32, f32), (f32, 
                 return fallback_grid(field, params);
             }
             let low = a.confidence < LOW_CONF || b.confidence < LOW_CONF;
-            let (ax, ay) = (a.phase + 1.0, b.phase + 1.0);
             // AI pixel art is near-square: if one axis is weak, borrow the strong period.
             if a.confidence >= LOW_CONF && b.confidence < LOW_CONF {
-                ((a.period, ax), (a.period, ay), low)
+                ((a.period, a.phase + 1.0), borrow(&sy, a.period), low)
             } else if b.confidence >= LOW_CONF && a.confidence < LOW_CONF {
-                ((b.period, ax), (b.period, ay), low)
+                (borrow(&sx, b.period), (b.period, b.phase + 1.0), low)
             } else {
-                ((a.period, ax), (b.period, ay), low)
+                ((a.period, a.phase + 1.0), (b.period, b.phase + 1.0), low)
             }
         }
         (Some(a), None) => (
             (a.period, a.phase + 1.0),
-            (a.period, a.phase + 1.0),
+            borrow(&sy, a.period),
             a.confidence < LOW_CONF,
         ),
         (None, Some(b)) => (
-            (b.period, b.phase + 1.0),
+            borrow(&sx, b.period),
             (b.period, b.phase + 1.0),
             b.confidence < LOW_CONF,
         ),

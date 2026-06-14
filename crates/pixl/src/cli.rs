@@ -1,5 +1,6 @@
 //! Command-line surface. `pixl 100 "stardew valley style house" ./` is the
-//! default (generate) form; subcommands cover post-processing existing images.
+//! default (generate) form; subcommands cover post-processing existing images
+//! and managing the local cache.
 
 use std::path::PathBuf;
 
@@ -27,6 +28,25 @@ pub enum Command {
     Gen(GenerateArgs),
     /// Post-process existing images into true pixel art (no GPU, no model).
     Pixelize(PixelizeArgs),
+    /// Inspect or clear the local model / merge cache.
+    Models {
+        #[command(subcommand)]
+        action: ModelsCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ModelsCmd {
+    /// List cached merged-UNet files and show where weights live.
+    Ls,
+    /// Delete pixl's merged-UNet cache (not the shared HF weights).
+    Clear {
+        /// Skip the confirmation prompt.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+    },
+    /// Print the cache directories.
+    Path,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -38,6 +58,9 @@ pub struct GenerateArgs {
     /// Output directory.
     pub out_dir: Option<PathBuf>,
 
+    /// Base model: `turbo` (fast, default) or `sdxl` (full, needs more steps).
+    #[arg(long, default_value = "turbo")]
+    pub model: String,
     /// Palette size for the post-process pass (0 = keep all distinct cell colors).
     #[arg(short = 'c', long, default_value_t = 16)]
     pub colors: u16,
@@ -50,11 +73,11 @@ pub struct GenerateArgs {
     /// Base seed; per-image seed is base + index.
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
-    /// Classifier-free guidance scale (1.0 for the Lightning path).
+    /// Classifier-free guidance scale (1.0 for the Lightning/Turbo path).
     #[arg(long, default_value_t = 1.0)]
     pub cfg: f32,
     /// Generation resolution, WxH.
-    #[arg(long, default_value = "1024x1024")]
+    #[arg(long, default_value = "512x512")]
     pub size: String,
     /// Skip the true-pixel-art post-process and save raw generations.
     #[arg(long, default_value_t = false)]
@@ -104,18 +127,24 @@ pub struct PixelizeArgs {
 /// Parse a `WxH` (or `N`) size string into (w, h).
 pub fn parse_size(s: &str) -> Result<(u32, u32), String> {
     let s = s.trim().to_lowercase();
-    if let Some((w, h)) = s.split_once('x') {
-        let w = w
-            .trim()
-            .parse()
-            .map_err(|_| format!("bad width in {s:?}"))?;
-        let h = h
-            .trim()
-            .parse()
-            .map_err(|_| format!("bad height in {s:?}"))?;
-        Ok((w, h))
+    let (w, h) = if let Some((w, h)) = s.split_once('x') {
+        (
+            w.trim()
+                .parse()
+                .map_err(|_| format!("bad width in {s:?}"))?,
+            h.trim()
+                .parse()
+                .map_err(|_| format!("bad height in {s:?}"))?,
+        )
     } else {
         let n = s.parse().map_err(|_| format!("bad size {s:?}"))?;
-        Ok((n, n))
+        (n, n)
+    };
+    // SDXL requires positive, multiple-of-8 dimensions; reject early for a clean error.
+    if w == 0 || h == 0 || w % 8 != 0 || h % 8 != 0 {
+        return Err(format!(
+            "size must be positive and divisible by 8, got {w}x{h}"
+        ));
     }
+    Ok((w, h))
 }

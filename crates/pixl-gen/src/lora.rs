@@ -6,10 +6,11 @@
 //! so we translate just the attention-block envelope and pass the inner payload
 //! through, then add `scale * up @ down` into the base weight.
 //!
-//! The merge runs on CPU and writes a complete merged UNet to a content-addressed
-//! cache, which is then loaded through candle's normal mmap path — so generation
-//! keeps the base model's fast, flat-memory residency instead of a ~5 GB eager
-//! in-RAM copy.
+//! The merge runs on CPU and writes a complete merged UNet to a cache keyed on
+//! the base + LoRA file PATHS and scale (not their contents), loaded through
+//! candle's mmap path so generation keeps the base model's flat-memory residency
+//! instead of a ~5 GB eager in-RAM copy. Clear the cache (`pixl models clear`)
+//! after replacing a LoRA/base file in place or upgrading pixl.
 
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -74,11 +75,17 @@ pub fn map_module(kohya: &str) -> Option<String> {
     let (env, inner) = if let Some(r) = m.strip_prefix("input_blocks_") {
         let (n, r) = r.split_once('_')?;
         let (sub, inner) = r.split_once('_')?;
-        (envelope("input_blocks", n.parse().ok()?, sub.parse().ok()?)?, inner)
+        (
+            envelope("input_blocks", n.parse().ok()?, sub.parse().ok()?)?,
+            inner,
+        )
     } else if let Some(r) = m.strip_prefix("output_blocks_") {
         let (n, r) = r.split_once('_')?;
         let (sub, inner) = r.split_once('_')?;
-        (envelope("output_blocks", n.parse().ok()?, sub.parse().ok()?)?, inner)
+        (
+            envelope("output_blocks", n.parse().ok()?, sub.parse().ok()?)?,
+            inner,
+        )
     } else if let Some(r) = m.strip_prefix("middle_block_") {
         let (sub, inner) = r.split_once('_')?;
         if sub != "1" {
@@ -93,7 +100,11 @@ pub fn map_module(kohya: &str) -> Option<String> {
 
 /// Add `scale * up @ down` for every mappable module of `lora_path` into `base`.
 /// Returns (applied, skipped). Runs on whatever device `base` tensors live on.
-fn merge_into(base: &mut HashMap<String, Tensor>, lora_path: &Path, user_scale: f32) -> Result<(usize, usize)> {
+fn merge_into(
+    base: &mut HashMap<String, Tensor>,
+    lora_path: &Path,
+    user_scale: f32,
+) -> Result<(usize, usize)> {
     let lora = candle_core::safetensors::load(lora_path, &Device::Cpu)
         .with_context(|| format!("load lora {}", lora_path.display()))?;
     let mut modules: HashSet<String> = HashSet::new();
@@ -130,7 +141,16 @@ fn merge_into(base: &mut HashMap<String, Tensor>, lora_path: &Path, user_scale: 
                 continue;
             }
         };
+        if down.rank() != 2 || up.rank() != 2 {
+            // these LoRAs are attention-only (2D Linear); skip anything else rather than panic
+            skipped += 1;
+            continue;
+        }
         let rank = down.dim(0)? as f32;
+        if rank < 1.0 || !user_scale.is_finite() {
+            skipped += 1;
+            continue;
+        }
         let alpha = match lora.get(&format!("{m}.alpha")) {
             Some(a) => a.to_dtype(DType::F32)?.to_scalar::<f32>()?,
             None => rank,
@@ -158,24 +178,34 @@ fn cache_key(base_path: &Path, loras: &[(PathBuf, f32)]) -> String {
 
 /// Path to a complete UNet safetensors with `loras` merged into `base_path`.
 /// Content-addressed; the merge (on CPU) runs only on the first request.
-pub fn merged_unet_path(base_path: &Path, loras: &[(PathBuf, f32)], cache_dir: &Path) -> Result<PathBuf> {
+pub fn merged_unet_path(
+    base_path: &Path,
+    loras: &[(PathBuf, f32)],
+    cache_dir: &Path,
+) -> Result<PathBuf> {
     let out = cache_dir.join(format!("unet-{}.safetensors", cache_key(base_path, loras)));
     if out.exists() {
         eprintln!("  using cached merged UNet ({})", out.display());
         return Ok(out);
     }
-    std::fs::create_dir_all(cache_dir).with_context(|| format!("create {}", cache_dir.display()))?;
+    std::fs::create_dir_all(cache_dir)
+        .with_context(|| format!("create {}", cache_dir.display()))?;
 
-    let mut base = candle_core::safetensors::load(base_path, &Device::Cpu).context("load base unet")?;
+    let mut base =
+        candle_core::safetensors::load(base_path, &Device::Cpu).context("load base unet")?;
     for (path, scale) in loras {
         let (a, s) = merge_into(&mut base, path, *scale)?;
-        anyhow::ensure!(a > 0, "lora {} mapped 0 modules — key convention mismatch", path.display());
+        anyhow::ensure!(
+            a > 0,
+            "lora {} mapped 0 modules — key convention mismatch",
+            path.display()
+        );
         eprintln!(
             "  lora {}: merged {a} modules ({s} skipped)",
             path.file_name().and_then(|s| s.to_str()).unwrap_or("?")
         );
     }
-    let tmp = out.with_extension("tmp");
+    let tmp = out.with_extension(format!("tmp.{}", std::process::id()));
     candle_core::safetensors::save(&base, &tmp).context("write merged unet")?;
     std::fs::rename(&tmp, &out).context("commit merged unet cache")?;
     eprintln!("  cached merged UNet -> {}", out.display());
