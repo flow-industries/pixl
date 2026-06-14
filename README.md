@@ -34,7 +34,8 @@ The first generate downloads ~7 GB of SDXL weights (one time, cached under `~/.c
 
 ```bash
 # generate N images and snap each to true pixel art
-pixl 100 "stardew valley style house" ./out
+pixl 100 "stardew valley style house"           # -> ~/.pixl/<timestamp>-<prompt>/
+pixl 100 "stardew valley style house" ./out     # -> ./out (override)
 
 # knobs
 pixl 8 "..." ./out --colors 24 --pixel-size 8 --steps 4 --seed 1000 --model turbo

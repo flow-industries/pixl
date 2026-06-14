@@ -65,7 +65,7 @@ pub struct GenerateArgs {
     pub count: Option<u32>,
     /// Text prompt.
     pub prompt: Option<String>,
-    /// Output directory.
+    /// Output directory (default: ~/.pixl/<timestamp>-<prompt>).
     pub out_dir: Option<PathBuf>,
 
     /// Base model.

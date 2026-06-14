@@ -83,16 +83,13 @@ fn resolve_out(input: &Path, out: &Option<PathBuf>, multi: bool) -> PathBuf {
 fn run_generate(args: GenerateArgs) -> Result<()> {
     let count = args
         .count
-        .context("missing COUNT (usage: pixl <COUNT> <PROMPT> <OUT_DIR>)")?;
+        .context("missing COUNT (usage: pixl <COUNT> <PROMPT> [OUT_DIR])")?;
     let prompt = args.prompt.clone().context("missing PROMPT")?;
-    let out_dir = args.out_dir.clone().context("missing OUT_DIR")?;
     let (w, h) = cli::parse_size(&args.size).map_err(anyhow::Error::msg)?;
-    std::fs::create_dir_all(&out_dir)
-        .with_context(|| format!("creating output dir {}", out_dir.display()))?;
 
     #[cfg(feature = "metal")]
     {
-        generate_metal(&prompt, count, &out_dir, w, h, &args)
+        generate_metal(&prompt, count, w, h, &args)
     }
     #[cfg(not(feature = "metal"))]
     {
@@ -112,14 +109,7 @@ fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: S
 }
 
 #[cfg(feature = "metal")]
-fn generate_metal(
-    prompt: &str,
-    count: u32,
-    out_dir: &Path,
-    w: u32,
-    h: u32,
-    args: &GenerateArgs,
-) -> Result<()> {
+fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
     use pixl_gen::{
         BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef,
@@ -127,6 +117,16 @@ fn generate_metal(
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    let out_dir = args
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| default_out_dir(prompt));
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("creating output dir {}", out_dir.display()))?;
+    if !args.quiet {
+        eprintln!("output: {}", out_dir.display());
+    }
 
     if !args.lora_weight.is_finite() {
         anyhow::bail!("--lora-weight must be a finite number");
@@ -305,6 +305,9 @@ fn generate_metal(
         for (i, e) in fails.iter() {
             eprintln!("  image {i}: {e}");
         }
+        if ok > 0 && std::io::stderr().is_terminal() {
+            eprintln!("  {}", open_link(&out_dir));
+        }
     }
     if cancelled {
         std::process::exit(130);
@@ -370,6 +373,73 @@ fn postprocess(
         FilterType::Nearest,
     );
     Ok((up, report))
+}
+
+/// UTC `YYYYMMDD-HHMMSS` (civil date from days-since-epoch; no date crate).
+#[cfg(feature = "metal")]
+fn timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86400) as i64;
+    let tod = secs % 86400;
+    let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}")
+}
+
+/// First few prompt words as a dash-slug, capped to 40 chars.
+#[cfg(feature = "metal")]
+fn short_slug(prompt: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = true;
+    for c in prompt.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    let t = out.trim_matches('-').to_string();
+    if t.is_empty() {
+        "img".into()
+    } else {
+        t
+    }
+}
+
+/// Default per-run output dir: `~/.pixl/<timestamp>-<prompt-words>`.
+#[cfg(feature = "metal")]
+fn default_out_dir(prompt: &str) -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".pixl")
+        .join(format!("{}-{}", timestamp(), short_slug(prompt)))
+}
+
+/// An OSC-8 terminal hyperlink to `path` (clickable; opens the folder in Finder).
+#[cfg(feature = "metal")]
+fn open_link(path: &Path) -> String {
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let uri = format!("file://{}", abs.to_string_lossy().replace(' ', "%20"));
+    let esc = char::from(0x1b);
+    let bs = char::from(0x5c);
+    format!("open: {esc}]8;;{uri}{esc}{bs}{}{esc}]8;;{esc}{bs}", abs.display())
 }
 
 #[cfg(feature = "metal")]
