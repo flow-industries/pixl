@@ -2097,8 +2097,10 @@ dependencies = [
  "ctrlc",
  "image",
  "indicatif",
+ "libc",
  "pixl-gen",
  "pixl-pixelize",
+ "rayon",
  "serde_json",
 ]
 

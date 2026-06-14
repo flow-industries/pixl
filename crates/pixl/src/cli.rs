@@ -110,6 +110,10 @@ pub struct GenerateArgs {
     /// Abort on the first failed image.
     #[arg(long, default_value_t = false)]
     pub fail_fast: bool,
+    /// Run at low priority so the batch doesn't bog down the rest of the machine
+    /// (macOS background QoS + single-threaded pixelize).
+    #[arg(long, default_value_t = false)]
+    pub nice: bool,
 }
 
 #[derive(Args, Debug, Clone)]

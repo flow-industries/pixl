@@ -66,11 +66,10 @@ See [`DESIGN.md`](DESIGN.md) for the full design and roadmap.
 
 ## Resource usage
 
-Generation runs SDXL on the GPU — it is GPU-heavy. The biggest levers are fewer `--steps`, smaller `--size`, and fewer images. To keep the UI responsive, run it throttled:
+Generation runs SDXL on the GPU — it is GPU-heavy. The biggest levers are fewer `--steps`, smaller `--size`, and fewer images. Pass `--nice` to keep the machine responsive — it drops the process to background priority (on macOS, the same as `taskpolicy -b`) and single-threads the pixelize pass:
 
 ```bash
-RAYON_NUM_THREADS=2 /usr/sbin/taskpolicy -b nice -n 19 \
-  pixl 100 "stardew valley style house" ./out --jobs 1
+pixl 100 "stardew valley style house" --nice
 ```
 
 ## License

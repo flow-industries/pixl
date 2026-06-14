@@ -19,6 +19,19 @@ fn main() -> Result<()> {
     }
 }
 
+/// Lower this process to background priority (on macOS, equivalent to
+/// `taskpolicy -b`) and cap the pixelize thread pool to one, so a batch stays out
+/// of the way of the rest of the machine.
+fn apply_nice() {
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
+    #[cfg(target_os = "macos")]
+    unsafe {
+        const PRIO_DARWIN_PROCESS: libc::c_int = 4;
+        const PRIO_DARWIN_BG: libc::c_int = 0x1000;
+        libc::setpriority(PRIO_DARWIN_PROCESS, 0, PRIO_DARWIN_BG);
+    }
+}
+
 fn run_pixelize(args: PixelizeArgs) -> Result<()> {
     let multi = args.inputs.len() > 1;
     if multi {
@@ -81,6 +94,9 @@ fn resolve_out(input: &Path, out: &Option<PathBuf>, multi: bool) -> PathBuf {
 }
 
 fn run_generate(args: GenerateArgs) -> Result<()> {
+    if args.nice {
+        apply_nice();
+    }
     let count = args
         .count
         .context("missing COUNT (usage: pixl <COUNT> <PROMPT> [OUT_DIR])")?;
