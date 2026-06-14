@@ -105,20 +105,20 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
     let prompt = args.prompt.clone().context("missing PROMPT")?;
     let (w, h) = cli::parse_size(&args.size).map_err(anyhow::Error::msg)?;
 
-    #[cfg(feature = "metal")]
+    #[cfg(feature = "gen")]
     {
         generate_metal(&prompt, count, w, h, &args)
     }
-    #[cfg(not(feature = "metal"))]
+    #[cfg(not(feature = "gen"))]
     {
         let _ = (w, h, count, &prompt);
         anyhow::bail!(
-            "this build has no generation backend; rebuild with --features metal (macOS). `pixl pixelize <img>` works without it."
+            "this build has no generation backend. Rebuild with --features gen (Metal on macOS, CPU elsewhere) or --features cuda (NVIDIA). `pixl pixelize <img>` works without it."
         )
     }
 }
 
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: String) {
     failures
         .lock()
@@ -126,7 +126,7 @@ fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: S
         .push((i, msg));
 }
 
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
     use pixl_gen::{
@@ -347,7 +347,7 @@ fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs)
 }
 
 /// Pixelize (unless disabled) + save one generated image. Returns a JSON summary.
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn pixelize_and_save(
     gi: pixl_gen::GenImage,
     i: usize,
@@ -377,7 +377,7 @@ fn pixelize_and_save(
     .to_string())
 }
 
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn postprocess(
     img: &image::RgbImage,
     args: &GenerateArgs,
@@ -404,7 +404,7 @@ fn postprocess(
 }
 
 /// UTC `YYYYMMDD-HHMMSS` (civil date from days-since-epoch; no date crate).
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -426,7 +426,7 @@ fn timestamp() -> String {
 }
 
 /// First few prompt words as a dash-slug, capped to 40 chars.
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn short_slug(prompt: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = true;
@@ -451,7 +451,7 @@ fn short_slug(prompt: &str) -> String {
 }
 
 /// Default per-run output dir: `~/.pixl/<timestamp>-<prompt-words>`.
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn default_out_dir(prompt: &str) -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -461,7 +461,7 @@ fn default_out_dir(prompt: &str) -> PathBuf {
 }
 
 /// An OSC-8 terminal hyperlink to `path` (clickable; opens the folder in Finder).
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn open_link(path: &Path) -> String {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let uri = format!("file://{}", abs.to_string_lossy().replace(' ', "%20"));
@@ -473,7 +473,7 @@ fn open_link(path: &Path) -> String {
     )
 }
 
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 fn slugify(s: &str) -> String {
     let out: String = s
         .chars()

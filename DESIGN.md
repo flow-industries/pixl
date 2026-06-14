@@ -112,9 +112,10 @@ before commit; the real findings are fixed:
 - **Memory:** RSS flat (~90 MB anonymous; weights mmap'd + in Metal unified
   memory) and per-image time steady across an 8-image loop — no leak observed,
   so the `objc2::autoreleasepool` guard is deferred to M4's long-run pipeline.
-- The candle/Metal stack is behind an optional **`metal` feature** (default off)
-  so default builds + CI stay GPU-free; `cargo build --features metal` (macOS)
-  builds the real generator.
+- The candle stack is behind an optional **`gen` feature** (default off) so default
+  builds + CI stay GPU-free. The backend is selected by target — **Metal+Accelerate
+  on macOS, CPU elsewhere** — with an opt-in **`cuda`** feature for NVIDIA; `metal`
+  remains as a back-compat alias for `gen`.
 
 ### Deviations adopted during M1 (intentional, documented)
 

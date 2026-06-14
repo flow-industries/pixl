@@ -9,13 +9,13 @@ use std::path::PathBuf;
 
 use image::RgbImage;
 
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 pub mod device;
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 mod lora;
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 mod sdxl;
-#[cfg(feature = "metal")]
+#[cfg(feature = "gen")]
 pub use sdxl::{BaseModel, CandleSdxlGenerator, LoraRef};
 
 /// Cache root (`$XDG_CACHE_HOME` or `$HOME/.cache`, else a temp dir — never

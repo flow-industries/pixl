@@ -1,6 +1,6 @@
 [package]
 name = "pixl-gen"
-description = "Local diffusion image generation backend (SDXL + LoRA on candle/Metal). Trait-decoupled from the CLI."
+description = "Local diffusion image generation backend (SDXL + LoRA on candle). Trait-decoupled; backend (Metal/CUDA/CPU) chosen at build time."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,21 +9,30 @@ rust-version.workspace = true
 [dependencies]
 image.workspace = true
 thiserror.workspace = true
-
-# The candle/Metal backend is behind the `metal` feature (default off) so the
-# trait + types compile everywhere (incl. Linux CI); enable it on macOS to build
-# the real generator: `cargo build --features metal`.
-candle-core = { version = "0.10", optional = true }
-candle-nn = { version = "0.10", optional = true }
-candle-transformers = { version = "0.10", optional = true }
+# Heavy ML stack is behind the `gen` feature so the trait + types compile everywhere.
 hf-hub = { version = "0.5", optional = true, features = ["ureq"] }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
 anyhow = { workspace = true, optional = true }
 
+# Backend is selected by target automatically: Metal + Accelerate on macOS, plain
+# CPU elsewhere. The `cuda` feature overrides this for NVIDIA GPUs (any OS).
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.10", optional = true, features = ["metal", "accelerate"] }
+candle-nn = { version = "0.10", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.10", optional = true, features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = { version = "0.10", optional = true }
+candle-nn = { version = "0.10", optional = true }
+candle-transformers = { version = "0.10", optional = true }
+
 [features]
-metal = [
+# Build the generation backend (candle). Backend auto-selected by target.
+gen = [
     "dep:candle-core", "dep:candle-nn", "dep:candle-transformers",
     "dep:hf-hub", "dep:tokenizers", "dep:anyhow",
-    "candle-core/metal", "candle-core/accelerate",
-    "candle-nn/metal", "candle-transformers/metal",
 ]
+# NVIDIA GPUs (requires the CUDA toolkit at build time).
+cuda = ["gen", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# Back-compat alias: on macOS this resolves to the Metal backend.
+metal = ["gen"]

@@ -8,9 +8,13 @@ default:
 build:
     cargo build --release
 
-# full build with the candle/Metal generation backend (macOS)
-build-metal:
-    cargo build --release --features metal
+# full build with the generation backend (Metal on macOS, CPU elsewhere)
+build-gen:
+    cargo build --release --features gen
+
+# generation backend for NVIDIA GPUs (needs the CUDA toolkit)
+build-cuda:
+    cargo build --release --features cuda
 
 # GPU-free tests (the pixelize golden tests)
 test:
@@ -21,13 +25,13 @@ lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
 
-# lint the metal backend too
-lint-metal:
-    cargo clippy -p pixl -p pixl-gen --features metal --all-targets -- -D warnings
+# lint the generation backend too
+lint-gen:
+    cargo clippy -p pixl -p pixl-gen --features gen --all-targets -- -D warnings
 
-# install the full binary
+# install the full binary (Metal on macOS, CPU elsewhere)
 install:
-    cargo install --path crates/pixl --features metal
+    cargo install --path crates/pixl --features gen
 
 # fabricate a demo "AI pixel-art" image to try `pixl pixelize`
 demo out="/tmp/demo.png":

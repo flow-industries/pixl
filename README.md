@@ -8,10 +8,16 @@ pixl 100 "stardew valley style house" ./out
 
 ## Installation
 
-macOS / Apple Silicon (with the GPU generation backend):
+With the generation backend (auto-selected by platform — Metal on macOS, CPU elsewhere):
 
 ```bash
-cargo install --path crates/pixl --features metal
+cargo install --path crates/pixl --features gen
+```
+
+On an NVIDIA machine (Linux/Windows; needs the CUDA toolkit at build time):
+
+```bash
+cargo install --path crates/pixl --features cuda
 ```
 
 Build from source:
@@ -19,10 +25,11 @@ Build from source:
 ```bash
 git clone https://github.com/flow-industries/pixl.git
 cd pixl
-cargo install --path crates/pixl --features metal
+cargo install --path crates/pixl --features gen
 ```
 
-The pixelize-only build (no GPU, for post-processing existing images) drops the feature:
+The **pixelize-only** build drops the ML stack — post-process existing images, builds
+fast on any platform, no GPU:
 
 ```bash
 cargo install --path crates/pixl
