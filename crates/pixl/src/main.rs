@@ -401,15 +401,32 @@ fn run_models(action: ModelsCmd) -> Result<()> {
         }
         ModelsCmd::Ls => {
             let (files, total) = list_merged(&merged);
+            println!("merged-LoRA cache ({}):", merged.display());
             if files.is_empty() {
-                println!("no merged-UNet cache yet ({})", merged.display());
+                println!("  (empty)");
             } else {
                 for (name, sz) in &files {
                     println!("  {:>9}  {name}", human(*sz));
                 }
-                println!("  total {} in {}", human(total), merged.display());
+                println!("  {:>9}  total", human(total));
             }
-            println!("hf weights cache: {}", pixl_gen::hf_cache_dir().display());
+
+            let hf = pixl_gen::hf_cache_dir();
+            let mut models = dir_entries_by_size(&hf);
+            let hf_total: u64 = models.iter().map(|(_, s)| s).sum();
+            println!("hf weights cache ({}):", hf.display());
+            if models.is_empty() {
+                println!("  (empty)");
+            } else {
+                for (name, sz) in models.drain(..) {
+                    let pretty = name
+                        .strip_prefix("models--")
+                        .map(|r| r.replace("--", "/"))
+                        .unwrap_or(name);
+                    println!("  {:>9}  {pretty}", human(sz));
+                }
+                println!("  {:>9}  total", human(hf_total));
+            }
         }
         ModelsCmd::Clear { yes } => {
             let (files, total) = list_merged(&merged);
@@ -472,6 +489,40 @@ fn run_models(action: ModelsCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Top-level entries of `dir` with their on-disk size, largest first.
+fn dir_entries_by_size(dir: &Path) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            out.push((e.file_name().to_string_lossy().into_owned(), dir_size(&e.path())));
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
+/// Recursive on-disk size. Symlinks count as 0 so HF's snapshot symlinks-to-blobs
+/// are not double-counted (the real bytes live once in `blobs/`).
+fn dir_size(path: &Path) -> u64 {
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    if md.file_type().is_symlink() {
+        return 0;
+    }
+    if md.is_file() {
+        return md.len();
+    }
+    let mut total = 0;
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for e in rd.flatten() {
+            total += dir_size(&e.path());
+        }
+    }
+    total
 }
 
 fn list_merged(dir: &Path) -> (Vec<(String, u64)>, u64) {
