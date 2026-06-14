@@ -22,7 +22,7 @@ fn main() -> Result<()> {
 /// Lower this process to background priority (on macOS, equivalent to
 /// `taskpolicy -b`) and cap the pixelize thread pool to one, so a batch stays out
 /// of the way of the rest of the machine.
-fn apply_nice() {
+fn apply_low_priority() {
     let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
     #[cfg(target_os = "macos")]
     unsafe {
@@ -94,8 +94,8 @@ fn resolve_out(input: &Path, out: &Option<PathBuf>, multi: bool) -> PathBuf {
 }
 
 fn run_generate(args: GenerateArgs) -> Result<()> {
-    if args.nice {
-        apply_nice();
+    if args.low_prio {
+        apply_low_priority();
     }
     let count = args
         .count
