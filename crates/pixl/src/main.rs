@@ -128,6 +128,13 @@ fn generate_metal(
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
+    if !args.lora_weight.is_finite() {
+        anyhow::bail!("--lora-weight must be a finite number");
+    }
+    let model = match args.model {
+        cli::ModelArg::Sdxl => BaseModel::Sdxl,
+        cli::ModelArg::Turbo => BaseModel::SdxlTurbo,
+    };
     let loras = if args.no_lora {
         Vec::new()
     } else {
@@ -139,20 +146,21 @@ fn generate_metal(
     };
 
     if !args.quiet {
-        eprintln!("loading SDXL-Turbo (first run downloads weights, ~7 GB, one time)…");
+        let name = match model {
+            BaseModel::Sdxl => "SDXL",
+            BaseModel::SdxlTurbo => "SDXL-Turbo",
+        };
+        // hf-hub shows a real byte-progress bar only when a file is actually fetched.
+        eprintln!("loading {name}\u{2026} (first use fetches ~7 GB of weights, then cached)");
         if !loras.is_empty() {
             eprintln!("  + pixel-art LoRA (weight {})", args.lora_weight);
         }
-    }
-    if !args.lora_weight.is_finite() {
-        anyhow::bail!("--lora-weight must be a finite number");
-    }
-    let model = match args.model {
-        cli::ModelArg::Sdxl => BaseModel::Sdxl,
-        cli::ModelArg::Turbo => BaseModel::SdxlTurbo,
-    };
-    if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) && !args.quiet {
-        eprintln!("note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
+        if args.no_lora && !args.no_postprocess {
+            eprintln!("  note: --no-lora produces a normal (non-pixel-art) image, so the pixelize pass has no real grid to snap and the result will look like noise. Drop --no-lora for pixel art, or add --no-postprocess to keep the raw render.");
+        }
+        if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) {
+            eprintln!("  note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
+        }
     }
     let mut generator = CandleSdxlGenerator::load(model, w, h, &loras)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
