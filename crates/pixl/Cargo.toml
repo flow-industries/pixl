@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [features]
 # Build the candle/Metal generation backend (macOS) + its progress/pipeline deps.
+default = ["gen"]
 gen = ["pixl-gen/gen", "dep:indicatif", "dep:crossbeam-channel", "dep:ctrlc", "dep:serde_json"]
 cuda = ["gen", "pixl-gen/cuda"]
 metal = ["gen"]

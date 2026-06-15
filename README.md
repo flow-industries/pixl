@@ -7,17 +7,17 @@ A local pixel-art generator. It generates with SDXL + a pixel-art LoRA, then sna
 ## Installation
 
 ```bash
-cargo install flow-pixl --features gen
+cargo install flow-pixl
 ```
 
-`--features gen` builds the generation backend (Metal on macOS, CPU elsewhere); use `--features cuda` for NVIDIA. Without it, `pixl pixelize` still works with no GPU.
+Generation is included by default (Metal on macOS, CPU elsewhere). Use `--features cuda` for NVIDIA, or `--no-default-features` for a pixelize-only build (no GPU/ML, builds fast anywhere).
 
 Build from source:
 
 ```bash
 git clone https://github.com/flow-industries/pixl.git
 cd pixl
-cargo install --path crates/pixl --features gen
+cargo install --path crates/pixl
 ```
 
 ## Usage

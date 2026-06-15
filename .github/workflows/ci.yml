@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  check:
+  core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,7 +13,17 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # pixl-pixelize is GPU-free, so the testable core runs on a stock runner.
+      # The pixelize core is GPU-free; check it without the heavy generation backend.
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - run: cargo test --workspace --no-default-features
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Verify the default install (generation backend) compiles cross-platform (CPU here).
+      - run: cargo clippy -p flow-pixl --features gen --all-targets -- -D warnings
