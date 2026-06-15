@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords = ["stable-diffusion", "sdxl", "diffusion", "candle", "image"]
+categories = ["multimedia::images"]
 
 [dependencies]
 image.workspace = true

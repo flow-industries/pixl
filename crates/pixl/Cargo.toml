@@ -1,10 +1,14 @@
 [package]
-name = "pixl"
-description = "Local pixel-art generator for Apple Silicon: SDXL + pixel-art LoRA, snapped to true pixel art."
+name = "flow-pixl"
+description = "Local pixel-art generator: SDXL + a pixel-art LoRA, snapped to true pixel art (Metal/CUDA/CPU)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords = ["pixel-art", "sdxl", "stable-diffusion", "gamedev", "image"]
+categories = ["command-line-utilities", "multimedia::images"]
+readme = "README.md"
 
 [[bin]]
 name = "pixl"
