@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "flow-pixl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2238,7 +2238,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pixl-gen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "pixl-pixelize"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "image",
  "rayon",
