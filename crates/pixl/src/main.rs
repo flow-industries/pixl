@@ -95,23 +95,50 @@ fn resolve_out(input: &Path, out: &Option<PathBuf>, multi: bool) -> PathBuf {
     }
 }
 
+const DEFAULT_COUNT: u32 = 4;
+
+/// Resolve `[COUNT] PROMPT [OUT_DIR]`: a leading numeric arg is COUNT (default 4
+/// when absent), the next is the prompt, the last is an optional output dir.
+fn resolve_positionals(pos: &[String]) -> Result<(u32, String, Option<PathBuf>)> {
+    match pos {
+        [] => anyhow::bail!("missing PROMPT (usage: pixl [COUNT] <PROMPT> [OUT_DIR])"),
+        [a] => {
+            if a.parse::<u32>().is_ok() {
+                anyhow::bail!("missing PROMPT (got only a count)");
+            }
+            Ok((DEFAULT_COUNT, a.clone(), None))
+        }
+        [a, b] => {
+            if let Ok(n) = a.parse::<u32>() {
+                Ok((n, b.clone(), None))
+            } else {
+                Ok((DEFAULT_COUNT, a.clone(), Some(PathBuf::from(b))))
+            }
+        }
+        [a, b, c] => {
+            let n = a
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!("COUNT must be a number, got {a:?}"))?;
+            Ok((n, b.clone(), Some(PathBuf::from(c))))
+        }
+        _ => anyhow::bail!("too many positional arguments (expected [COUNT] <PROMPT> [OUT_DIR])"),
+    }
+}
+
 fn run_generate(args: GenerateArgs) -> Result<()> {
     if args.low_prio {
         apply_low_priority();
     }
-    let count = args
-        .count
-        .context("missing COUNT (usage: pixl <COUNT> <PROMPT> [OUT_DIR])")?;
-    let prompt = args.prompt.clone().context("missing PROMPT")?;
+    let (count, prompt, out_dir) = resolve_positionals(&args.positional)?;
     let (w, h) = cli::parse_size(&args.size).map_err(anyhow::Error::msg)?;
 
     #[cfg(feature = "gen")]
     {
-        generate_metal(&prompt, count, w, h, &args)
+        generate_metal(&prompt, count, out_dir, w, h, &args)
     }
     #[cfg(not(feature = "gen"))]
     {
-        let _ = (w, h, count, &prompt);
+        let _ = (w, h, count, &prompt, &out_dir);
         anyhow::bail!(
             "this build has no generation backend. Rebuild with --features gen (Metal on macOS, CPU elsewhere) or --features cuda (NVIDIA). `pixl pixelize <img>` works without it."
         )
@@ -127,7 +154,14 @@ fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: S
 }
 
 #[cfg(feature = "gen")]
-fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs) -> Result<()> {
+fn generate_metal(
+    prompt: &str,
+    count: u32,
+    out_dir: Option<PathBuf>,
+    w: u32,
+    h: u32,
+    args: &GenerateArgs,
+) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
     use pixl_gen::{
         BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef,
@@ -136,10 +170,7 @@ fn generate_metal(prompt: &str, count: u32, w: u32, h: u32, args: &GenerateArgs)
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    let out_dir = args
-        .out_dir
-        .clone()
-        .unwrap_or_else(|| default_out_dir(prompt));
+    let out_dir = out_dir.unwrap_or_else(|| default_out_dir(prompt));
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
     if !args.quiet {
@@ -658,5 +689,30 @@ fn human(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{b:.1} {}", U[i])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(v: &[&str]) -> (u32, String, Option<PathBuf>) {
+        resolve_positionals(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn resolves_optional_count() {
+        assert_eq!(r(&["a cozy tavern"]), (4, "a cozy tavern".into(), None));
+        assert_eq!(r(&["8", "tavern"]), (8, "tavern".into(), None));
+        assert_eq!(
+            r(&["tavern", "out"]),
+            (4, "tavern".into(), Some(PathBuf::from("out")))
+        );
+        assert_eq!(
+            r(&["8", "tavern", "out"]),
+            (8, "tavern".into(), Some(PathBuf::from("out")))
+        );
+        assert!(resolve_positionals(&["8".to_string()]).is_err());
+        assert!(resolve_positionals(&[]).is_err());
     }
 }

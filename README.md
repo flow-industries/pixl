@@ -23,9 +23,9 @@ cargo install --path crates/pixl --features gen
 ## Usage
 
 ```bash
-pixl 100 "stardew valley style house"        # -> ~/.pixl/<timestamp>-<prompt>/
-pixl 8 "a cozy tavern" ./out --colors 24     # output dir + palette size
-pixl 8 "a cozy tavern" --low-prio            # run at low priority
+pixl "a cozy tavern"                         # 4 images -> ~/.pixl/<timestamp>-<prompt>/
+pixl 100 "stardew valley style house" ./out  # count + output dir
+pixl 8 "a cozy tavern" --colors 24 --low-prio
 pixl pixelize sprite.png --scale 8           # snap an existing image (no GPU)
 pixl models ls                               # inspect the model cache
 ```

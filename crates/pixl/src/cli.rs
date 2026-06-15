@@ -61,12 +61,10 @@ pub enum ModelArg {
 
 #[derive(Args, Debug, Clone)]
 pub struct GenerateArgs {
-    /// How many images to generate.
-    pub count: Option<u32>,
-    /// Text prompt.
-    pub prompt: Option<String>,
-    /// Output directory (default: ~/.pixl/<timestamp>-<prompt>).
-    pub out_dir: Option<PathBuf>,
+    /// `[COUNT] PROMPT [OUT_DIR]`: COUNT defaults to 4 and may be omitted
+    /// (`pixl "a prompt"`); OUT_DIR defaults to ~/.pixl/<timestamp>-<prompt>/.
+    #[arg(value_name = "ARGS", num_args = 0..)]
+    pub positional: Vec<String>,
 
     /// Base model.
     #[arg(long, value_enum, default_value_t = ModelArg::Turbo)]
