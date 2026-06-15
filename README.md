@@ -1,5 +1,7 @@
 # pixl
 
+[![crates.io](https://img.shields.io/crates/v/flow-pixl.svg)](https://crates.io/crates/flow-pixl)
+
 A local pixel-art generator for Apple Silicon — generate with SDXL + a pixel-art LoRA on the GPU, then snap the result to *true* pixel art (a clean, uniform grid and a limited palette). Fully on-device, no Python at runtime.
 
 ```bash
@@ -11,28 +13,27 @@ pixl 100 "stardew valley style house" ./out
 With the generation backend (auto-selected by platform — Metal on macOS, CPU elsewhere):
 
 ```bash
-cargo install --path crates/pixl --features gen
+cargo install flow-pixl --features gen
 ```
 
-On an NVIDIA machine (Linux/Windows; needs the CUDA toolkit at build time):
+NVIDIA (Linux/Windows; needs the CUDA toolkit at build time):
 
 ```bash
-cargo install --path crates/pixl --features cuda
+cargo install flow-pixl --features cuda
 ```
 
-Build from source:
+Pixelize-only (no GPU/ML — post-process existing images; builds fast on any platform):
+
+```bash
+cargo install flow-pixl
+```
+
+The installed binary is `pixl`. To build from source instead:
 
 ```bash
 git clone https://github.com/flow-industries/pixl.git
 cd pixl
 cargo install --path crates/pixl --features gen
-```
-
-The **pixelize-only** build drops the ML stack — post-process existing images, builds
-fast on any platform, no GPU:
-
-```bash
-cargo install --path crates/pixl
 ```
 
 The first generate downloads ~7 GB of SDXL weights (one time, cached under `~/.cache/huggingface`).
