@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// One image in the gallery.
+/// One finished image in the gallery.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub path: PathBuf,
@@ -12,6 +12,34 @@ pub struct Entry {
     pub seed: Option<u64>,
     /// Whether the user has copied this one into the saved folder.
     pub saved: bool,
+}
+
+/// A gallery slot, covering an image's whole lifecycle so the user can see the
+/// entire queued batch up front, not just finished images.
+pub enum Slot {
+    /// Queued but not started — shown as a placeholder.
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    Queued,
+    /// Generating, with its latest in-flight preview (if any yet).
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    Generating(Option<image::DynamicImage>),
+    /// Finished.
+    Done(Entry),
+}
+
+impl Slot {
+    pub fn done(&self) -> Option<&Entry> {
+        match self {
+            Slot::Done(e) => Some(e),
+            _ => None,
+        }
+    }
+    fn done_mut(&mut self) -> Option<&mut Entry> {
+        match self {
+            Slot::Done(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 /// Default keepers folder: `~/.pixl/saved` (consistent with the run dirs).
@@ -59,14 +87,14 @@ pub fn save_dest(saved_dir: &Path, entry: &Entry, exists: impl Fn(&Path) -> bool
     }
 }
 
-/// The navigable list of images plus a cursor.
+/// The navigable list of slots plus a cursor.
 ///
-/// `follow_edge` tracks whether the cursor is "riding the live edge": while it is,
-/// newly pushed images auto-advance the cursor to the newest; once the user steps
-/// back to inspect, their position is held and only the count grows.
+/// `follow_edge` tracks whether the cursor is riding the live edge: while it is,
+/// the cursor follows the image currently being generated; once the user steps
+/// back to inspect, their position is held.
 #[derive(Default)]
 pub struct Gallery {
-    pub entries: Vec<Entry>,
+    pub slots: Vec<Slot>,
     pub current: usize,
     follow_edge: bool,
 }
@@ -76,7 +104,7 @@ impl Gallery {
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
     pub fn live() -> Self {
         Self {
-            entries: Vec::new(),
+            slots: Vec::new(),
             current: 0,
             follow_edge: true,
         }
@@ -85,41 +113,38 @@ impl Gallery {
     /// A fixed gallery over already-known images (for `pixl view`).
     pub fn fixed(entries: Vec<Entry>) -> Self {
         Self {
-            entries,
+            slots: entries.into_iter().map(Slot::Done).collect(),
             current: 0,
             follow_edge: false,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.slots.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.slots.is_empty()
     }
 
-    pub fn current(&self) -> Option<&Entry> {
-        self.entries.get(self.current)
+    pub fn current_slot(&self) -> Option<&Slot> {
+        self.slots.get(self.current)
     }
 
-    pub fn current_mut(&mut self) -> Option<&mut Entry> {
-        self.entries.get_mut(self.current)
+    pub fn current_done(&self) -> Option<&Entry> {
+        self.slots.get(self.current).and_then(Slot::done)
+    }
+
+    pub fn current_done_mut(&mut self) -> Option<&mut Entry> {
+        self.slots.get_mut(self.current).and_then(Slot::done_mut)
     }
 
     fn at_edge(&self) -> bool {
-        self.current + 1 >= self.entries.len()
-    }
-
-    /// Whether the cursor is riding the live edge (so an in-flight preview of the
-    /// next image is what the user is looking at).
-    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn following(&self) -> bool {
-        self.follow_edge
+        self.current + 1 >= self.slots.len()
     }
 
     pub fn next(&mut self) {
-        if self.current + 1 < self.entries.len() {
+        if self.current + 1 < self.slots.len() {
             self.current += 1;
         }
         self.follow_edge = self.at_edge();
@@ -132,21 +157,46 @@ impl Gallery {
 
     pub fn first(&mut self) {
         self.current = 0;
-        self.follow_edge = self.entries.len() <= 1;
+        self.follow_edge = self.slots.len() <= 1;
     }
 
     pub fn last(&mut self) {
-        self.current = self.entries.len().saturating_sub(1);
+        self.current = self.slots.len().saturating_sub(1);
         self.follow_edge = true;
     }
 
-    /// Append a freshly generated image, advancing the cursor only if we're
-    /// following the live edge.
+    /// Append `n` queued slots for a starting batch.
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn push(&mut self, entry: Entry) {
-        self.entries.push(entry);
-        if self.follow_edge {
-            self.current = self.entries.len() - 1;
+    pub fn push_queued(&mut self, n: u32) {
+        for _ in 0..n {
+            self.slots.push(Slot::Queued);
+        }
+    }
+
+    /// Mark a slot as generating; follow it if we're riding the edge.
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    pub fn start(&mut self, index: usize) {
+        if let Some(s) = self.slots.get_mut(index) {
+            *s = Slot::Generating(None);
+        }
+        if self.follow_edge && index < self.slots.len() {
+            self.current = index;
+        }
+    }
+
+    /// Update a generating slot's latest preview.
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    pub fn set_preview(&mut self, index: usize, img: image::DynamicImage) {
+        if let Some(Slot::Generating(p)) = self.slots.get_mut(index) {
+            *p = Some(img);
+        }
+    }
+
+    /// Mark a slot finished.
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    pub fn finish(&mut self, index: usize, entry: Entry) {
+        if let Some(s) = self.slots.get_mut(index) {
+            *s = Slot::Done(entry);
         }
     }
 }
@@ -165,22 +215,36 @@ mod tests {
     }
 
     #[test]
-    fn follow_edge_autoadvances_then_holds() {
+    fn queued_then_generates_then_done() {
         let mut g = Gallery::live();
-        g.push(entry("a", None));
-        assert_eq!(g.current, 0);
-        g.push(entry("b", None));
-        assert_eq!(g.current, 1, "rides the live edge");
-        // step back to inspect -> stop following
-        g.prev();
-        assert_eq!(g.current, 0);
-        g.push(entry("c", None));
-        assert_eq!(g.current, 0, "held position while more stream in");
+        g.push_queued(3);
         assert_eq!(g.len(), 3);
-        // jumping to last re-attaches to the edge
-        g.last();
-        g.push(entry("d", None));
-        assert_eq!(g.current, 3);
+        assert!(matches!(g.current_slot(), Some(Slot::Queued)));
+        // start image 0 -> follows it
+        g.start(0);
+        assert_eq!(g.current, 0);
+        assert!(matches!(g.current_slot(), Some(Slot::Generating(None))));
+        g.set_preview(0, image::DynamicImage::new_rgb8(1, 1));
+        assert!(matches!(g.current_slot(), Some(Slot::Generating(Some(_)))));
+        g.finish(0, entry("a", Some(0)));
+        assert!(matches!(g.current_slot(), Some(Slot::Done(_))));
+        // next image starts; following -> cursor moves to it
+        g.start(1);
+        assert_eq!(g.current, 1);
+    }
+
+    #[test]
+    fn navigating_back_holds_position() {
+        let mut g = Gallery::live();
+        g.push_queued(3);
+        g.start(0);
+        g.finish(0, entry("a", None));
+        g.start(1);
+        assert_eq!(g.current, 1);
+        g.prev();
+        assert_eq!(g.current, 0, "stepped back to inspect");
+        g.start(2);
+        assert_eq!(g.current, 0, "held position; not following");
     }
 
     #[test]
@@ -190,25 +254,22 @@ mod tests {
         assert_eq!(g.current, 0);
         g.next();
         g.next();
-        assert_eq!(g.current, 1, "clamps at the last image");
+        assert_eq!(g.current, 1);
     }
 
     #[test]
     fn save_dest_uniquifies_on_collision() {
         let dir = Path::new("/saved");
         let e = entry("house_000", Some(42));
-        // nothing exists yet -> keep the source name
         assert_eq!(
             save_dest(dir, &e, |_| false),
             PathBuf::from("/saved/house_000.png")
         );
-        // direct name taken -> fall back to the seed
         let taken = PathBuf::from("/saved/house_000.png");
         assert_eq!(
             save_dest(dir, &e, |p| p == taken),
             PathBuf::from("/saved/house_000_42.png")
         );
-        // both taken -> numeric suffix
         let taken2 = [
             PathBuf::from("/saved/house_000.png"),
             PathBuf::from("/saved/house_000_42.png"),

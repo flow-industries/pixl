@@ -34,9 +34,10 @@ Run `pixl --help` for all options.
 
 ## Gallery
 
-In a graphics-capable terminal (Ghostty, Kitty, iTerm2) `pixl` opens an interactive gallery
-where each image forms inline as it generates (a live denoise preview), then snaps to the
-final pixelized result. Flip through them with the arrow keys, mark the
+In a graphics-capable terminal (Ghostty, Kitty, iTerm2) `pixl` opens an interactive gallery.
+The whole batch shows up front — queued images as a spinner placeholder, the one generating
+as a live denoise preview, and finished ones as the final pixel art — all navigable with the
+arrow keys. Flip through them with the arrow keys, mark the
 ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without reloading
 the model:
 

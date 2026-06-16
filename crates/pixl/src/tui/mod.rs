@@ -24,7 +24,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 
-use gallery::{save_dest, Gallery};
+use gallery::{save_dest, Gallery, Slot};
 
 #[cfg(feature = "gen")]
 #[derive(Clone)]
@@ -106,6 +106,23 @@ fn integer_scale(iw: u32, ih: u32, area: Rect, font: ratatui_image::FontSize) ->
     (pane_w / iw).min(pane_h / ih).max(1)
 }
 
+/// Centered rect (in cells) where an `iw`x`ih` image renders at its integer scale.
+#[cfg(feature = "gen")]
+fn image_rect(area: Rect, iw: u32, ih: u32, font: ratatui_image::FontSize) -> Rect {
+    let scale = integer_scale(iw, ih, area, font);
+    let w = ((iw * scale).div_ceil(font.width.max(1) as u32) as u16).min(area.width);
+    let h = ((ih * scale).div_ceil(font.height.max(1) as u32) as u16).min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+#[cfg(feature = "gen")]
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// Truncate `s` to at most `max` columns, ending with an ellipsis if it was cut.
 fn truncate_ellipsis(s: &str, max: usize) -> String {
     if max == 0 {
@@ -149,7 +166,9 @@ struct App {
     #[cfg(feature = "gen")]
     mods: Vec<bool>,
     #[cfg(feature = "gen")]
-    preview: Option<image::DynamicImage>,
+    gen_size: (u32, u32),
+    #[cfg(feature = "gen")]
+    tick: u64,
 }
 
 impl App {
@@ -170,9 +189,16 @@ impl App {
                 for ev in evs {
                     self.apply(ev);
                 }
+                if self.viewing_placeholder() {
+                    dirty = true;
+                }
             }
 
             if dirty {
+                #[cfg(feature = "gen")]
+                {
+                    self.tick = self.tick.wrapping_add(1);
+                }
                 terminal.draw(|f| self.render(f))?;
                 dirty = false;
             }
@@ -194,10 +220,13 @@ impl App {
     /// Decode the current image (if changed) and (re)build its protocol pre-scaled
     /// to the largest integer multiple that fits `area`.
     fn ensure_proto(&mut self, area: Rect) {
-        if self.gallery.is_empty() {
-            self.proto = None;
-            return;
-        }
+        let path = match self.gallery.current_done() {
+            Some(e) => e.path.clone(),
+            None => {
+                self.proto = None;
+                return;
+            }
+        };
         let idx = self.gallery.current;
         let font = self.picker.font_size();
 
@@ -212,7 +241,7 @@ impl App {
         // Reuse the decoded source across pane resizes; hit disk only on a new image.
         let src = match &self.proto {
             Some(s) if s.index == idx => s.src.clone(),
-            _ => match image::open(&self.gallery.entries[idx].path) {
+            _ => match image::open(&path) {
                 Ok(img) => img,
                 Err(_) => {
                     self.proto = None;
@@ -267,7 +296,11 @@ impl App {
         } else {
             self.gallery.current + 1
         };
-        let saved = self.gallery.current().map(|e| e.saved).unwrap_or(false);
+        let saved = self
+            .gallery
+            .current_done()
+            .map(|e| e.saved)
+            .unwrap_or(false);
 
         let mut spans = vec![
             Span::styled(
@@ -285,11 +318,7 @@ impl App {
         // Truncate the prompt to the remaining width so the title stays one line.
         let used = 6 + format!(" {idx}/{total}").chars().count() + if saved { 7 } else { 0 } + 2;
         let budget = (area.width as usize).saturating_sub(used);
-        let prompt = self
-            .gallery
-            .current()
-            .map(|e| truncate_ellipsis(&e.prompt, budget))
-            .unwrap_or_default();
+        let prompt = truncate_ellipsis(&self.title_prompt(), budget);
         if !prompt.is_empty() {
             spans.push(Span::styled(
                 format!("  {prompt}"),
@@ -332,24 +361,90 @@ impl App {
 
     fn render_main(&mut self, f: &mut Frame, area: Rect) {
         #[cfg(feature = "gen")]
-        {
-            if self.panel {
-                self.render_panel(f, area);
-                return;
-            }
-            if self.preview.is_some() && self.gallery.following() {
-                self.render_preview(f, area);
-                return;
-            }
+        if self.panel {
+            self.render_panel(f, area);
+            return;
         }
-        self.render_image(f, area);
+        if self.gallery.is_empty() {
+            f.render_widget(
+                Paragraph::new("waiting for the first image…")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+            return;
+        }
+        if matches!(self.gallery.current_slot(), Some(Slot::Done(_))) {
+            self.render_image(f, area);
+        } else {
+            #[cfg(feature = "gen")]
+            self.render_pending(f, area);
+        }
+    }
+
+    fn title_prompt(&self) -> String {
+        if let Some(e) = self.gallery.current_done() {
+            return e.prompt.clone();
+        }
+        #[cfg(feature = "gen")]
+        {
+            self.last_prompt.clone()
+        }
+        #[cfg(not(feature = "gen"))]
+        {
+            String::new()
+        }
     }
 
     #[cfg(feature = "gen")]
-    fn render_preview(&mut self, f: &mut Frame, area: Rect) {
-        let Some(src) = self.preview.clone() else {
-            return;
+    fn viewing_placeholder(&self) -> bool {
+        matches!(
+            self.gallery.current_slot(),
+            Some(Slot::Queued) | Some(Slot::Generating(None))
+        )
+    }
+
+    #[cfg(feature = "gen")]
+    fn render_pending(&mut self, f: &mut Frame, area: Rect) {
+        let preview = match self.gallery.current_slot() {
+            Some(Slot::Generating(Some(img))) => Some(img.clone()),
+            _ => None,
         };
+        if let Some(img) = preview {
+            self.render_preview(f, area, img);
+        } else {
+            let label = match self.gallery.current_slot() {
+                Some(Slot::Queued) => "queued",
+                _ => "generating",
+            };
+            self.render_placeholder(f, area, label);
+        }
+    }
+
+    #[cfg(feature = "gen")]
+    fn render_placeholder(&self, f: &mut Frame, area: Rect, label: &str) {
+        let (iw, ih) = self.gen_size;
+        let rect = image_rect(area, iw.max(1), ih.max(1), self.picker.font_size());
+        let block =
+            ratatui::widgets::Block::bordered().border_style(Style::new().fg(Color::DarkGray));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        let frame = SPINNER[(self.tick as usize) % SPINNER.len()];
+        let line = Line::from(Span::styled(
+            format!("{frame} {label}"),
+            Style::new().fg(Color::DarkGray),
+        ));
+        let mid = Rect {
+            x: inner.x,
+            y: inner.y + inner.height / 2,
+            width: inner.width.max(1),
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Center), mid);
+    }
+
+    #[cfg(feature = "gen")]
+    fn render_preview(&mut self, f: &mut Frame, area: Rect, src: image::DynamicImage) {
         // Fill + center exactly like the final image (the preview is a real VAE
         // decode at the same resolution, so it lines up when it snaps in).
         let font = self.picker.font_size();
@@ -554,8 +649,8 @@ impl App {
     }
 
     fn save_current(&mut self) {
-        let Some(entry) = self.gallery.current().cloned() else {
-            self.toast = Some("nothing to save".into());
+        let Some(entry) = self.gallery.current_done().cloned() else {
+            self.toast = Some("nothing to save yet".into());
             return;
         };
         let dest = save_dest(&self.saved_dir, &entry, |p| p.exists());
@@ -563,7 +658,7 @@ impl App {
             .and_then(|_| std::fs::copy(&entry.path, &dest).map(|_| ()));
         match res {
             Ok(()) => {
-                if let Some(e) = self.gallery.current_mut() {
+                if let Some(e) = self.gallery.current_done_mut() {
                     e.saved = true;
                 }
                 self.toast = Some(format!("saved → {}", dest.display()));
@@ -682,7 +777,6 @@ impl App {
             Download { file, done, total } => {
                 self.status = Status::Downloading { file, done, total }
             }
-            Preview(img) => self.preview = Some(image::DynamicImage::ImageRgb8(img)),
             Loaded {
                 model,
                 cached,
@@ -699,14 +793,16 @@ impl App {
                 self.model_line = Some(s);
                 self.status = Status::Idle;
             }
-            BatchStarted { total } => {
+            BatchStarted { count } => {
+                self.gallery.push_queued(count);
                 self.status = Status::Generating {
                     done: 0,
-                    total,
+                    total: count,
                     step: 0,
                     steps: 0,
-                }
+                };
             }
+            ImageStarted { index } => self.gallery.start(index),
             Step { step, steps } => {
                 if let Status::Generating {
                     step: st,
@@ -718,18 +814,20 @@ impl App {
                     *sn = steps;
                 }
             }
-            ImageReady(entry) => {
-                self.preview = None;
-                self.gallery.push(entry);
+            Preview { index, image } => {
+                self.gallery
+                    .set_preview(index, image::DynamicImage::ImageRgb8(image));
+            }
+            ImageReady { index, entry } => {
+                self.gallery.finish(index, entry);
                 if let Status::Generating { done, .. } = &mut self.status {
                     *done += 1;
                 }
             }
-            ImageFailed { idx, error } => self.toast = Some(format!("image {idx} failed: {error}")),
-            BatchDone => {
-                self.preview = None;
-                self.status = Status::Idle;
+            ImageFailed { index, error } => {
+                self.toast = Some(format!("image {index} failed: {error}"))
             }
+            BatchDone => self.status = Status::Idle,
             Error(e) => self.status = Status::Error(e),
         }
     }
@@ -775,7 +873,9 @@ pub fn run_static(dir: PathBuf, saved_dir: PathBuf) -> Result<()> {
         #[cfg(feature = "gen")]
         mods: Vec::new(),
         #[cfg(feature = "gen")]
-        preview: None,
+        gen_size: (0, 0),
+        #[cfg(feature = "gen")]
+        tick: 0,
     };
     let res = app.run(&mut terminal);
     ratatui::restore();
@@ -861,7 +961,8 @@ pub fn run_live(
         model_line: None,
         panel: false,
         mods: vec![false; MODIFIERS.len()],
-        preview: None,
+        gen_size: (w, h),
+        tick: 0,
     };
     app.submit();
     let res = app.run(&mut terminal);
@@ -873,7 +974,13 @@ pub fn run_live(
     ratatui::restore();
     res?;
 
-    let saved = app.gallery.entries.iter().filter(|e| e.saved).count();
+    let saved = app
+        .gallery
+        .slots
+        .iter()
+        .filter_map(Slot::done)
+        .filter(|e| e.saved)
+        .count();
     println!(
         "gallery: {} generated, {saved} saved -> {}",
         app.gallery.len(),

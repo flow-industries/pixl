@@ -4,7 +4,7 @@
 //! command channel, emitting per-image events. Keeping the generator resident
 //! means "rerun" and "edit prompt" never reload the model.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -41,16 +41,25 @@ pub enum GenEvent {
         merged: bool,
     },
     BatchStarted {
-        total: u32,
+        count: u32,
+    },
+    ImageStarted {
+        index: usize,
     },
     Step {
         step: usize,
         steps: usize,
     },
-    Preview(image::RgbImage),
-    ImageReady(Entry),
+    Preview {
+        index: usize,
+        image: image::RgbImage,
+    },
+    ImageReady {
+        index: usize,
+        entry: Entry,
+    },
     ImageFailed {
-        idx: usize,
+        index: usize,
         error: String,
     },
     BatchDone,
@@ -127,18 +136,23 @@ fn run(
         }
     };
 
-    // Per-step progress for the image currently rendering.
+    // Index of the image currently rendering, so step/preview callbacks (which
+    // don't know it) can tag their events with the right slot.
+    let cur = Arc::new(AtomicUsize::new(0));
     {
         let evt = evt_tx.clone();
         generator.set_step_callback(Box::new(move |step, steps| {
             let _ = evt.send(GenEvent::Step { step, steps });
         }));
     }
-    // In-flight preview of the latent each step.
     {
         let evt = evt_tx.clone();
-        generator.set_preview_callback(Box::new(move |img| {
-            let _ = evt.send(GenEvent::Preview(img));
+        let cur = cur.clone();
+        generator.set_preview_callback(Box::new(move |image| {
+            let _ = evt.send(GenEvent::Preview {
+                index: cur.load(Ordering::Relaxed),
+                image,
+            });
         }));
     }
 
@@ -159,7 +173,7 @@ fn run(
     }) = cmd_rx.recv()
     {
         cancel.store(false, Ordering::Relaxed);
-        let _ = evt_tx.send(GenEvent::BatchStarted { total: count });
+        let _ = evt_tx.send(GenEvent::BatchStarted { count });
         let req = GenRequest {
             prompt: prompt.clone(),
             negative: negative.clone(),
@@ -170,26 +184,31 @@ fn run(
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            cur.store(next_index, Ordering::Relaxed);
+            let _ = evt_tx.send(GenEvent::ImageStarted { index: next_index });
             match generator.generate(&req, next_index) {
                 Ok(gi) => match crate::pixelize_and_save(gi, next_index, &out_dir, &slug, &args) {
                     Ok(saved) => {
-                        let _ = evt_tx.send(GenEvent::ImageReady(Entry {
-                            path: saved.path,
-                            prompt: prompt.clone(),
-                            seed: Some(saved.seed),
-                            saved: false,
-                        }));
+                        let _ = evt_tx.send(GenEvent::ImageReady {
+                            index: next_index,
+                            entry: Entry {
+                                path: saved.path,
+                                prompt: prompt.clone(),
+                                seed: Some(saved.seed),
+                                saved: false,
+                            },
+                        });
                     }
                     Err(e) => {
                         let _ = evt_tx.send(GenEvent::ImageFailed {
-                            idx: next_index,
+                            index: next_index,
                             error: e.to_string(),
                         });
                     }
                 },
                 Err(e) => {
                     let _ = evt_tx.send(GenEvent::ImageFailed {
-                        idx: next_index,
+                        index: next_index,
                         error: e.to_string(),
                     });
                 }
