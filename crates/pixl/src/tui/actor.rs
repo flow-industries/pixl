@@ -47,6 +47,7 @@ pub enum GenEvent {
         step: usize,
         steps: usize,
     },
+    Preview(image::RgbImage),
     ImageReady(Entry),
     ImageFailed {
         idx: usize,
@@ -131,6 +132,13 @@ fn run(
         let evt = evt_tx.clone();
         generator.set_step_callback(Box::new(move |step, steps| {
             let _ = evt.send(GenEvent::Step { step, steps });
+        }));
+    }
+    // In-flight preview of the latent each step.
+    {
+        let evt = evt_tx.clone();
+        generator.set_preview_callback(Box::new(move |img| {
+            let _ = evt.send(GenEvent::Preview(img));
         }));
     }
 

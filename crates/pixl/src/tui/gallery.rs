@@ -111,6 +111,13 @@ impl Gallery {
         self.current + 1 >= self.entries.len()
     }
 
+    /// Whether the cursor is riding the live edge (so an in-flight preview of the
+    /// next image is what the user is looking at).
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    pub fn following(&self) -> bool {
+        self.follow_edge
+    }
+
     pub fn next(&mut self) {
         if self.current + 1 < self.entries.len() {
             self.current += 1;

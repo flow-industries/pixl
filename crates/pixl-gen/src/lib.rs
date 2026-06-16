@@ -122,6 +122,10 @@ pub struct DownloadProgress {
 /// instead of letting hf-hub print bars straight to the terminal.
 pub type ProgressFn = Box<dyn FnMut(DownloadProgress) + Send>;
 
+/// Live in-flight preview hook: a rough RGB image of the current latent, emitted
+/// each denoise step so a UI can show the image forming.
+pub type PreviewCallback = Box<dyn Fn(RgbImage) + Send + Sync>;
+
 #[derive(thiserror::Error, Debug)]
 pub enum GenError {
     #[error("generation backend not in this build (rebuild with --features metal)")]
@@ -141,6 +145,7 @@ pub enum GenError {
 pub trait Generator: Send + Sync {
     fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError>;
     fn set_step_callback(&mut self, _cb: StepCallback) {}
+    fn set_preview_callback(&mut self, _cb: PreviewCallback) {}
 }
 
 /// Placeholder backend for builds without a generation feature.

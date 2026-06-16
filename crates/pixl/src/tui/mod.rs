@@ -148,6 +148,8 @@ struct App {
     panel: bool,
     #[cfg(feature = "gen")]
     mods: Vec<bool>,
+    #[cfg(feature = "gen")]
+    preview: Option<image::DynamicImage>,
 }
 
 impl App {
@@ -330,11 +332,44 @@ impl App {
 
     fn render_main(&mut self, f: &mut Frame, area: Rect) {
         #[cfg(feature = "gen")]
-        if self.panel {
-            self.render_panel(f, area);
-            return;
+        {
+            if self.panel {
+                self.render_panel(f, area);
+                return;
+            }
+            if self.preview.is_some() && self.gallery.following() {
+                self.render_preview(f, area);
+                return;
+            }
         }
         self.render_image(f, area);
+    }
+
+    #[cfg(feature = "gen")]
+    fn render_preview(&mut self, f: &mut Frame, area: Rect) {
+        let Some(img) = self.preview.clone() else {
+            return;
+        };
+        // Smooth upscale (it's a low-res latent preview, not final pixel art).
+        let resize = Resize::Fit(Some(image::imageops::FilterType::Triangle));
+        let size = resize.size_for(
+            &img,
+            self.picker.font_size(),
+            ratatui::layout::Size {
+                width: area.width,
+                height: area.height,
+            },
+        );
+        let w = size.width.min(area.width);
+        let h = size.height.min(area.height);
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(w) / 2,
+            y: area.y + area.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+        let mut proto = self.picker.new_resize_protocol(img);
+        f.render_stateful_widget(StatefulImage::default().resize(resize), rect, &mut proto);
     }
 
     #[cfg(feature = "gen")]
@@ -485,25 +520,28 @@ impl App {
             return;
         }
 
+        // Navigation repeats on a held key; one-shot actions do not, so holding
+        // `r` can't queue a runaway of reruns.
+        let repeat = key.kind == KeyEventKind::Repeat;
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.gallery.prev(),
             KeyCode::Right | KeyCode::Char('l') => self.gallery.next(),
             KeyCode::Home | KeyCode::Char('g') => self.gallery.first(),
             KeyCode::End | KeyCode::Char('G') => self.gallery.last(),
-            KeyCode::Char('s') | KeyCode::Char(' ') => self.save_current(),
+            KeyCode::Char('s') | KeyCode::Char(' ') if !repeat => self.save_current(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             #[cfg(feature = "gen")]
-            KeyCode::Char('t') => {
+            KeyCode::Char('t') if !repeat => {
                 if !self.static_mode {
                     self.panel = true;
                 }
             }
             #[cfg(feature = "gen")]
-            KeyCode::Char('r') => self.rerun(),
+            KeyCode::Char('r') if !repeat => self.rerun(),
             #[cfg(feature = "gen")]
-            KeyCode::Char('e') => self.begin_edit(),
+            KeyCode::Char('e') if !repeat => self.begin_edit(),
             #[cfg(feature = "gen")]
-            KeyCode::Char('c') => self.cancel_gen(),
+            KeyCode::Char('c') if !repeat => self.cancel_gen(),
             _ => {}
         }
     }
@@ -637,6 +675,7 @@ impl App {
             Download { file, done, total } => {
                 self.status = Status::Downloading { file, done, total }
             }
+            Preview(img) => self.preview = Some(image::DynamicImage::ImageRgb8(img)),
             Loaded {
                 model,
                 cached,
@@ -673,13 +712,17 @@ impl App {
                 }
             }
             ImageReady(entry) => {
+                self.preview = None;
                 self.gallery.push(entry);
                 if let Status::Generating { done, .. } = &mut self.status {
                     *done += 1;
                 }
             }
             ImageFailed { idx, error } => self.toast = Some(format!("image {idx} failed: {error}")),
-            BatchDone => self.status = Status::Idle,
+            BatchDone => {
+                self.preview = None;
+                self.status = Status::Idle;
+            }
             Error(e) => self.status = Status::Error(e),
         }
     }
@@ -724,6 +767,8 @@ pub fn run_static(dir: PathBuf, saved_dir: PathBuf) -> Result<()> {
         panel: false,
         #[cfg(feature = "gen")]
         mods: Vec::new(),
+        #[cfg(feature = "gen")]
+        preview: None,
     };
     let res = app.run(&mut terminal);
     ratatui::restore();
@@ -809,6 +854,7 @@ pub fn run_live(
         model_line: None,
         panel: false,
         mods: vec![false; MODIFIERS.len()],
+        preview: None,
     };
     app.submit();
     let res = app.run(&mut terminal);

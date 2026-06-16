@@ -35,7 +35,8 @@ Run `pixl --help` for all options.
 ## Gallery
 
 In a graphics-capable terminal (Ghostty, Kitty, iTerm2) `pixl` opens an interactive gallery
-that shows images inline as they generate. Flip through them with the arrow keys, mark the
+where each image forms inline as it generates (a live denoise preview), then snaps to the
+final pixelized result. Flip through them with the arrow keys, mark the
 ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without reloading
 the model:
 
@@ -64,7 +65,9 @@ pixl --model sdxl "a wooden treasure chest" \
   --negative "scene, multiple objects, background, shadow"
 ```
 
-`--model sdxl` defaults to cfg 7 / 25 steps (negatives only bite at cfg > 1). In the gallery,
+`--model sdxl` defaults to cfg 7 / 25 steps (negatives only bite at cfg > 1). Higher cfg means
+tighter prompt adherence but less variety between seeds — for a constrained subject the results
+can look near-identical; drop `--cfg` to ~4-5 for more varied takes. In the gallery,
 press `t` for a checklist of one-key modifiers — single subject, plain background, item icon,
 no shadow, keyable background — that fold isolation fragments onto your prompt (and the matching
 negatives). Toggle, press Enter, and it regenerates with the already-loaded model.

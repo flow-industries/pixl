@@ -69,6 +69,7 @@ pub struct CandleSdxlGenerator {
     width: usize,
     height: usize,
     step_cb: Option<crate::StepCallback>,
+    preview_cb: Option<crate::PreviewCallback>,
 }
 
 impl CandleSdxlGenerator {
@@ -180,6 +181,7 @@ impl CandleSdxlGenerator {
                 width: w,
                 height: h,
                 step_cb: None,
+                preview_cb: None,
             },
             report,
         ))
@@ -271,6 +273,11 @@ impl CandleSdxlGenerator {
             if let Some(cb) = &self.step_cb {
                 cb(si + 1, total);
             }
+            if let Some(cb) = &self.preview_cb {
+                if let Ok(img) = self.latent_preview(&latents) {
+                    cb(img);
+                }
+            }
         }
 
         let img = self.vae.decode(&(latents / self.vae_scale)?)?;
@@ -279,6 +286,39 @@ impl CandleSdxlGenerator {
             .to_device(&Device::Cpu)?;
         let img = (img * 255.0)?.to_dtype(DType::U8)?.i(0)?;
         tensor_to_rgb(&img)
+    }
+}
+
+// SDXL latent -> approximate RGB factors (ComfyUI), row-major 4 channels x 3 rgb,
+// calibrated with the bias so `latent . factors + bias` is already ~[0,1].
+const PREVIEW_FACTORS: [f32; 12] = [
+    0.3651, 0.4232, 0.4341, //
+    -0.2533, -0.0042, 0.1068, //
+    0.1076, 0.1111, -0.0362, //
+    -0.3165, -0.2492, -0.2188,
+];
+const PREVIEW_BIAS: [f32; 3] = [0.1084, -0.0175, -0.0011];
+
+impl CandleSdxlGenerator {
+    /// Cheap linear decode of the current latent to a rough RGB preview (no VAE),
+    /// at latent resolution. Used for the in-flight gallery preview.
+    fn latent_preview(&self, latents: &Tensor) -> Result<RgbImage> {
+        let lat = latents.squeeze(0)?.to_dtype(DType::F32)?; // (4, lh, lw)
+        let (c, h, w) = lat.dims3()?;
+        let flat = lat.reshape((c, h * w))?.t()?.contiguous()?; // (lh*lw, 4)
+        let factors = Tensor::from_slice(&PREVIEW_FACTORS, (4, 3), &self.device)?;
+        let bias = Tensor::from_slice(&PREVIEW_BIAS, (1, 3), &self.device)?;
+        let rgb = flat
+            .matmul(&factors)?
+            .broadcast_add(&bias)?
+            .clamp(0f32, 1f32)?;
+        let rgb = (rgb * 255.0)?
+            .to_dtype(DType::U8)?
+            .to_device(&Device::Cpu)?
+            .flatten_all()?
+            .to_vec1::<u8>()?;
+        RgbImage::from_raw(w as u32, h as u32, rgb)
+            .ok_or_else(|| anyhow!("preview buffer mismatch"))
     }
 }
 
@@ -362,5 +402,9 @@ impl Generator for CandleSdxlGenerator {
 
     fn set_step_callback(&mut self, cb: crate::StepCallback) {
         self.step_cb = Some(cb);
+    }
+
+    fn set_preview_callback(&mut self, cb: crate::PreviewCallback) {
+        self.preview_cb = Some(cb);
     }
 }
