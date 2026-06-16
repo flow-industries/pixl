@@ -77,6 +77,7 @@ impl CandleSdxlGenerator {
         width: u32,
         height: u32,
         loras: &[LoraRef],
+        progress: Option<crate::ProgressFn>,
     ) -> Result<(Self, crate::LoadReport)> {
         let device = crate::device::select(0).map_err(|e| anyhow!("device: {e}"))?;
         let dtype = DType::F16;
@@ -85,13 +86,31 @@ impl CandleSdxlGenerator {
         let repo = model.repo();
         let weights_cached = crate::hf_model_cached(repo);
 
+        // With a progress sink, suppress hf-hub's own terminal bars (they would
+        // corrupt a TUI) and forward bytes to the sink instead. The cache lookup
+        // mirrors `ApiRepo::get` so cached files are never re-downloaded; it must
+        // use `Cache::default()` to match `ApiBuilder::new`'s cache dir exactly.
         let api = ApiBuilder::new()
-            .with_progress(true)
+            .with_progress(progress.is_none())
             .build()
             .context("hf-hub api")?;
+        let cache = hf_hub::Cache::default();
+        let progress = progress.map(|cb| std::sync::Arc::new(std::sync::Mutex::new(cb)));
         let pull = |r: &str, f: &str| -> Result<std::path::PathBuf> {
+            let cb = match &progress {
+                None => {
+                    return api
+                        .model(r.to_string())
+                        .get(f)
+                        .with_context(|| format!("download {r}/{f}"));
+                }
+                Some(cb) => cb,
+            };
+            if let Some(p) = cache.model(r.to_string()).get(f) {
+                return Ok(p);
+            }
             api.model(r.to_string())
-                .get(f)
+                .download_with_progress(f, HubProgress::new(cb.clone(), f))
                 .with_context(|| format!("download {r}/{f}"))
         };
 
@@ -268,6 +287,62 @@ fn tensor_to_rgb(chw: &Tensor) -> Result<RgbImage> {
     anyhow::ensure!(c == 3, "expected 3 channels, got {c}");
     let data = chw.permute((1, 2, 0))?.flatten_all()?.to_vec1::<u8>()?;
     RgbImage::from_raw(w as u32, h as u32, data).ok_or_else(|| anyhow!("rgb buffer size mismatch"))
+}
+
+/// Forwards hf-hub download bytes to a [`crate::ProgressFn`], coalescing updates
+/// to ~4 MB so the UI isn't flooded.
+struct HubProgress {
+    cb: std::sync::Arc<std::sync::Mutex<crate::ProgressFn>>,
+    file: String,
+    done: u64,
+    total: u64,
+    last: u64,
+}
+
+fn short_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+impl HubProgress {
+    fn new(cb: std::sync::Arc<std::sync::Mutex<crate::ProgressFn>>, file: &str) -> Self {
+        Self {
+            cb,
+            file: short_name(file),
+            done: 0,
+            total: 0,
+            last: 0,
+        }
+    }
+    fn emit(&self) {
+        if let Ok(mut cb) = self.cb.lock() {
+            (cb)(crate::DownloadProgress {
+                file: self.file.clone(),
+                done: self.done,
+                total: self.total,
+            });
+        }
+    }
+}
+
+impl hf_hub::api::Progress for HubProgress {
+    fn init(&mut self, size: usize, filename: &str) {
+        self.total = size as u64;
+        self.done = 0;
+        self.last = 0;
+        self.file = short_name(filename);
+        self.emit();
+    }
+    fn update(&mut self, size: usize) {
+        self.done += size as u64;
+        if self.done.saturating_sub(self.last) >= 4_000_000 || self.done >= self.total {
+            self.last = self.done;
+            self.emit();
+        }
+    }
+    fn finish(&mut self) {
+        self.done = self.total;
+        self.emit();
+    }
 }
 
 impl Generator for CandleSdxlGenerator {

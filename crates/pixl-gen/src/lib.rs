@@ -111,6 +111,17 @@ pub struct GenImage {
 /// Per-step progress hook (denoise step, total steps).
 pub type StepCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
 
+/// Progress for one downloaded weight file. `total` is 0 until the size is known.
+pub struct DownloadProgress {
+    pub file: String,
+    pub done: u64,
+    pub total: u64,
+}
+
+/// Sink for [`DownloadProgress`], so a UI can render its own download progress
+/// instead of letting hf-hub print bars straight to the terminal.
+pub type ProgressFn = Box<dyn FnMut(DownloadProgress) + Send>;
+
 #[derive(thiserror::Error, Debug)]
 pub enum GenError {
     #[error("generation backend not in this build (rebuild with --features metal)")]

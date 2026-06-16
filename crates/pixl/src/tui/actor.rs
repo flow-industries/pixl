@@ -29,6 +29,11 @@ pub enum GenCommand {
 /// Events streamed back to the gallery.
 pub enum GenEvent {
     Loading,
+    Download {
+        file: String,
+        done: u64,
+        total: u64,
+    },
     Loaded {
         model: String,
         cached: bool,
@@ -103,7 +108,17 @@ fn run(
 ) {
     let _ = evt_tx.send(GenEvent::Loading);
     let (model, loras) = crate::model_and_loras(&args);
-    let (mut generator, report) = match CandleSdxlGenerator::load(model, w, h, &loras) {
+    let prog: pixl_gen::ProgressFn = {
+        let evt = evt_tx.clone();
+        Box::new(move |p: pixl_gen::DownloadProgress| {
+            let _ = evt.send(GenEvent::Download {
+                file: p.file,
+                done: p.done,
+                total: p.total,
+            });
+        })
+    };
+    let (mut generator, report) = match CandleSdxlGenerator::load(model, w, h, &loras, Some(prog)) {
         Ok(g) => g,
         Err(e) => {
             let _ = evt_tx.send(GenEvent::Error(format!("loading generator: {e}")));

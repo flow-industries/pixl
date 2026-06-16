@@ -30,6 +30,11 @@ use gallery::{save_dest, Gallery};
 #[derive(Clone)]
 enum Status {
     Loading,
+    Downloading {
+        file: String,
+        done: u64,
+        total: u64,
+    },
     Generating {
         done: usize,
         total: u32,
@@ -421,6 +426,18 @@ impl App {
             Status::Loading => {
                 Line::from(Span::styled("loading model…", Style::new().fg(Color::Cyan)))
             }
+            Status::Downloading { file, done, total } => {
+                let txt = if *total > 0 {
+                    format!(
+                        "downloading {file}  {} / {}",
+                        crate::human(*done),
+                        crate::human(*total)
+                    )
+                } else {
+                    format!("downloading {file}  {}", crate::human(*done))
+                };
+                Line::from(Span::styled(txt, Style::new().fg(Color::Cyan)))
+            }
             Status::Generating {
                 done,
                 total,
@@ -617,6 +634,9 @@ impl App {
         use actor::GenEvent::*;
         match ev {
             Loading => self.status = Status::Loading,
+            Download { file, done, total } => {
+                self.status = Status::Downloading { file, done, total }
+            }
             Loaded {
                 model,
                 cached,

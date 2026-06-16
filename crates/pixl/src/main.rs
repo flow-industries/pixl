@@ -269,7 +269,7 @@ fn generate_metal(
     }
     let (model, loras) = model_and_loras(args);
 
-    let (mut generator, report) = CandleSdxlGenerator::load(model, w, h, &loras)
+    let (mut generator, report) = CandleSdxlGenerator::load(model, w, h, &loras, None)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
 
     if !args.quiet {
