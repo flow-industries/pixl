@@ -347,29 +347,36 @@ impl App {
 
     #[cfg(feature = "gen")]
     fn render_preview(&mut self, f: &mut Frame, area: Rect) {
-        let Some(img) = self.preview.clone() else {
+        let Some(src) = self.preview.clone() else {
             return;
         };
-        // Smooth upscale (it's a low-res latent preview, not final pixel art).
-        let resize = Resize::Fit(Some(image::imageops::FilterType::Triangle));
-        let size = resize.size_for(
-            &img,
-            self.picker.font_size(),
-            ratatui::layout::Size {
-                width: area.width,
-                height: area.height,
-            },
-        );
-        let w = size.width.min(area.width);
-        let h = size.height.min(area.height);
+        // Fill + center exactly like the final image (the preview is a real VAE
+        // decode at the same resolution, so it lines up when it snaps in).
+        let font = self.picker.font_size();
+        let scale = integer_scale(src.width(), src.height(), area, font);
+        let scaled = if scale <= 1 {
+            src
+        } else {
+            src.resize_exact(
+                src.width() * scale,
+                src.height() * scale,
+                image::imageops::FilterType::Nearest,
+            )
+        };
+        let w = (scaled.width().div_ceil(font.width.max(1) as u32) as u16).min(area.width);
+        let h = (scaled.height().div_ceil(font.height.max(1) as u32) as u16).min(area.height);
         let rect = Rect {
             x: area.x + area.width.saturating_sub(w) / 2,
             y: area.y + area.height.saturating_sub(h) / 2,
             width: w,
             height: h,
         };
-        let mut proto = self.picker.new_resize_protocol(img);
-        f.render_stateful_widget(StatefulImage::default().resize(resize), rect, &mut proto);
+        let mut proto = self.picker.new_resize_protocol(scaled);
+        f.render_stateful_widget(
+            StatefulImage::default().resize(Resize::Fit(None)),
+            rect,
+            &mut proto,
+        );
     }
 
     #[cfg(feature = "gen")]
