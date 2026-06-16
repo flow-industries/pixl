@@ -4,8 +4,9 @@
 //! command channel, emitting per-image events. Keeping the generator resident
 //! means "rerun" and "edit prompt" never reload the model.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -41,6 +42,7 @@ pub enum GenEvent {
         merged: bool,
     },
     BatchStarted {
+        start: usize,
         count: u32,
     },
     ImageStarted {
@@ -77,13 +79,19 @@ pub struct Actor {
 impl Actor {
     /// Spawn the actor; it loads the generator, emits `Loading`/`Loaded`, then
     /// serves `Generate` commands until the command channel closes.
-    pub fn spawn(args: GenerateArgs, w: u32, h: u32, out_dir: std::path::PathBuf) -> Self {
+    pub fn spawn(
+        args: GenerateArgs,
+        w: u32,
+        h: u32,
+        out_dir: std::path::PathBuf,
+        skip: Arc<Mutex<HashSet<usize>>>,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<GenCommand>();
         let (evt_tx, evt_rx) = crossbeam_channel::unbounded::<GenEvent>();
         let cancel = Arc::new(AtomicBool::new(false));
         let handle = {
             let cancel = cancel.clone();
-            std::thread::spawn(move || run(args, w, h, out_dir, cmd_rx, evt_tx, cancel))
+            std::thread::spawn(move || run(args, w, h, out_dir, cmd_rx, evt_tx, cancel, skip))
         };
         Self {
             cmd: cmd_tx,
@@ -107,6 +115,7 @@ impl Actor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     args: GenerateArgs,
     w: u32,
@@ -115,6 +124,7 @@ fn run(
     cmd_rx: Receiver<GenCommand>,
     evt_tx: Sender<GenEvent>,
     cancel: Arc<AtomicBool>,
+    skip: Arc<Mutex<HashSet<usize>>>,
 ) {
     let _ = evt_tx.send(GenEvent::Loading);
     let (model, loras) = crate::model_and_loras(&args);
@@ -173,47 +183,60 @@ fn run(
     }) = cmd_rx.recv()
     {
         cancel.store(false, Ordering::Relaxed);
-        let _ = evt_tx.send(GenEvent::BatchStarted { count });
+        let _ = evt_tx.send(GenEvent::BatchStarted {
+            start: next_index,
+            count,
+        });
         let req = GenRequest {
             prompt: prompt.clone(),
             negative: negative.clone(),
             params: crate::gen_params(&args),
         };
         let slug = crate::slugify(&prompt);
+        let is_skipped = |id: usize| skip.lock().map(|s| s.contains(&id)).unwrap_or(false);
         for _ in 0..count {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            cur.store(next_index, Ordering::Relaxed);
-            let _ = evt_tx.send(GenEvent::ImageStarted { index: next_index });
-            match generator.generate(&req, next_index) {
-                Ok(gi) => match crate::pixelize_and_save(gi, next_index, &out_dir, &slug, &args) {
-                    Ok(saved) => {
-                        let _ = evt_tx.send(GenEvent::ImageReady {
-                            index: next_index,
-                            entry: Entry {
-                                path: saved.path,
-                                prompt: prompt.clone(),
-                                seed: Some(saved.seed),
-                                saved: false,
-                            },
-                        });
+            let id = next_index;
+            next_index += 1;
+            if is_skipped(id) {
+                continue; // discarded while queued: don't spend the GPU
+            }
+            cur.store(id, Ordering::Relaxed);
+            let _ = evt_tx.send(GenEvent::ImageStarted { index: id });
+            match generator.generate(&req, id) {
+                Ok(gi) => {
+                    if is_skipped(id) {
+                        continue; // discarded mid-flight: drop the result, don't save
                     }
-                    Err(e) => {
-                        let _ = evt_tx.send(GenEvent::ImageFailed {
-                            index: next_index,
-                            error: e.to_string(),
-                        });
+                    match crate::pixelize_and_save(gi, id, &out_dir, &slug, &args) {
+                        Ok(saved) => {
+                            let _ = evt_tx.send(GenEvent::ImageReady {
+                                index: id,
+                                entry: Entry {
+                                    path: saved.path,
+                                    prompt: prompt.clone(),
+                                    seed: Some(saved.seed),
+                                    saved: false,
+                                },
+                            });
+                        }
+                        Err(e) => {
+                            let _ = evt_tx.send(GenEvent::ImageFailed {
+                                index: id,
+                                error: e.to_string(),
+                            });
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     let _ = evt_tx.send(GenEvent::ImageFailed {
-                        index: next_index,
+                        index: id,
                         error: e.to_string(),
                     });
                 }
             }
-            next_index += 1;
         }
         let _ = evt_tx.send(GenEvent::BatchDone);
     }

@@ -42,7 +42,7 @@ ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without
 the model:
 
 ```
-left/right  navigate   s  save   t  modifiers   r  rerun   e  edit prompt   c  cancel   q  quit
+left/right  navigate   s  save   x  discard   t  modifiers   r  rerun   e  edit prompt   c  cancel   q  quit
 ```
 
 Elsewhere — or when piping, with `--json`, or `--no-view` — it falls back to the headless

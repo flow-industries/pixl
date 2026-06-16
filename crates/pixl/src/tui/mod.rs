@@ -13,6 +13,11 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(feature = "gen")]
+use std::collections::HashSet;
+#[cfg(feature = "gen")]
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -169,6 +174,10 @@ struct App {
     gen_size: (u32, u32),
     #[cfg(feature = "gen")]
     tick: u64,
+    #[cfg(feature = "gen")]
+    skip: Arc<Mutex<HashSet<usize>>>,
+    #[cfg(feature = "gen")]
+    out_dir: PathBuf,
 }
 
 impl App {
@@ -545,7 +554,7 @@ impl App {
             if self.static_mode {
                 "←/→ nav · s save · q quit"
             } else {
-                "←/→ nav · s save · t toggles · r rerun · e edit · c cancel · q quit"
+                "←/→ nav · s save · x discard · t toggles · r rerun · e edit · c cancel · q quit"
             }
         }
         #[cfg(not(feature = "gen"))]
@@ -644,6 +653,8 @@ impl App {
             KeyCode::Char('e') if !repeat => self.begin_edit(),
             #[cfg(feature = "gen")]
             KeyCode::Char('c') if !repeat => self.cancel_gen(),
+            #[cfg(feature = "gen")]
+            KeyCode::Char('x') if !repeat => self.discard_current(),
             _ => {}
         }
     }
@@ -742,6 +753,26 @@ impl App {
         }
     }
 
+    /// Discard the current slot: drop it from the gallery, tell the generator to
+    /// skip it (queued) or drop its result (in-flight), and delete its run file
+    /// if already written.
+    #[cfg(feature = "gen")]
+    fn discard_current(&mut self) {
+        if let Some((id, slot)) = self.gallery.remove_current() {
+            if !self.static_mode {
+                if let Ok(mut set) = self.skip.lock() {
+                    set.insert(id);
+                }
+                if let Slot::Done(e) = &slot {
+                    if e.path.starts_with(&self.out_dir) {
+                        let _ = std::fs::remove_file(&e.path);
+                    }
+                }
+            }
+            self.toast = Some("discarded".into());
+        }
+    }
+
     #[cfg(feature = "gen")]
     fn on_key_input(&mut self, key: KeyEvent) {
         match key.code {
@@ -793,8 +824,8 @@ impl App {
                 self.model_line = Some(s);
                 self.status = Status::Idle;
             }
-            BatchStarted { count } => {
-                self.gallery.push_queued(count);
+            BatchStarted { start, count } => {
+                self.gallery.push_queued(start, count);
                 self.status = Status::Generating {
                     done: 0,
                     total: count,
@@ -876,6 +907,10 @@ pub fn run_static(dir: PathBuf, saved_dir: PathBuf) -> Result<()> {
         gen_size: (0, 0),
         #[cfg(feature = "gen")]
         tick: 0,
+        #[cfg(feature = "gen")]
+        skip: Arc::new(Mutex::new(HashSet::new())),
+        #[cfg(feature = "gen")]
+        out_dir: PathBuf::new(),
     };
     let res = app.run(&mut terminal);
     ratatui::restore();
@@ -943,7 +978,8 @@ pub fn run_live(
         return Ok(false);
     }
 
-    let actor = actor::Actor::spawn(args.clone(), w, h, out_dir.clone());
+    let skip = Arc::new(Mutex::new(HashSet::new()));
+    let actor = actor::Actor::spawn(args.clone(), w, h, out_dir.clone(), skip.clone());
     let mut app = App {
         gallery: Gallery::live(),
         picker,
@@ -963,6 +999,8 @@ pub fn run_live(
         mods: vec![false; MODIFIERS.len()],
         gen_size: (w, h),
         tick: 0,
+        skip,
+        out_dir: out_dir.clone(),
     };
     app.submit();
     let res = app.run(&mut terminal);
@@ -978,7 +1016,7 @@ pub fn run_live(
         .gallery
         .slots
         .iter()
-        .filter_map(Slot::done)
+        .filter_map(|(_, s)| s.done())
         .filter(|e| e.saved)
         .count();
     println!(

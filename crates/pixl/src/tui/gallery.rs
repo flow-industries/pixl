@@ -94,7 +94,9 @@ pub fn save_dest(saved_dir: &Path, entry: &Entry, exists: impl Fn(&Path) -> bool
 /// back to inspect, their position is held.
 #[derive(Default)]
 pub struct Gallery {
-    pub slots: Vec<Slot>,
+    /// `(global id, state)`. The id is the generator's image index and is stable
+    /// across removals, so events keep matching after a slot is discarded.
+    pub slots: Vec<(usize, Slot)>,
     pub current: usize,
     follow_edge: bool,
 }
@@ -113,7 +115,11 @@ impl Gallery {
     /// A fixed gallery over already-known images (for `pixl view`).
     pub fn fixed(entries: Vec<Entry>) -> Self {
         Self {
-            slots: entries.into_iter().map(Slot::Done).collect(),
+            slots: entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| (i, Slot::Done(e)))
+                .collect(),
             current: 0,
             follow_edge: false,
         }
@@ -128,15 +134,21 @@ impl Gallery {
     }
 
     pub fn current_slot(&self) -> Option<&Slot> {
-        self.slots.get(self.current)
+        self.slots.get(self.current).map(|(_, s)| s)
     }
 
     pub fn current_done(&self) -> Option<&Entry> {
-        self.slots.get(self.current).and_then(Slot::done)
+        self.slots.get(self.current).and_then(|(_, s)| s.done())
     }
 
     pub fn current_done_mut(&mut self) -> Option<&mut Entry> {
-        self.slots.get_mut(self.current).and_then(Slot::done_mut)
+        self.slots
+            .get_mut(self.current)
+            .and_then(|(_, s)| s.done_mut())
+    }
+
+    fn pos_of(&self, id: usize) -> Option<usize> {
+        self.slots.iter().position(|(i, _)| *i == id)
     }
 
     fn at_edge(&self) -> bool {
@@ -165,39 +177,56 @@ impl Gallery {
         self.follow_edge = true;
     }
 
-    /// Append `n` queued slots for a starting batch.
+    /// Append `n` queued slots with ids `start..start+n`.
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn push_queued(&mut self, n: u32) {
-        for _ in 0..n {
-            self.slots.push(Slot::Queued);
+    pub fn push_queued(&mut self, start: usize, n: u32) {
+        for i in 0..n as usize {
+            self.slots.push((start + i, Slot::Queued));
         }
     }
 
-    /// Mark a slot as generating; follow it if we're riding the edge.
+    /// Mark slot `id` as generating; follow it if we're riding the edge.
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn start(&mut self, index: usize) {
-        if let Some(s) = self.slots.get_mut(index) {
-            *s = Slot::Generating(None);
-        }
-        if self.follow_edge && index < self.slots.len() {
-            self.current = index;
+    pub fn start(&mut self, id: usize) {
+        if let Some(pos) = self.pos_of(id) {
+            self.slots[pos].1 = Slot::Generating(None);
+            if self.follow_edge {
+                self.current = pos;
+            }
         }
     }
 
-    /// Update a generating slot's latest preview.
+    /// Update slot `id`'s latest preview.
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn set_preview(&mut self, index: usize, img: image::DynamicImage) {
-        if let Some(Slot::Generating(p)) = self.slots.get_mut(index) {
-            *p = Some(img);
+    pub fn set_preview(&mut self, id: usize, img: image::DynamicImage) {
+        if let Some(pos) = self.pos_of(id) {
+            if let (_, Slot::Generating(p)) = &mut self.slots[pos] {
+                *p = Some(img);
+            }
         }
     }
 
-    /// Mark a slot finished.
+    /// Mark slot `id` finished.
     #[cfg_attr(not(feature = "gen"), allow(dead_code))]
-    pub fn finish(&mut self, index: usize, entry: Entry) {
-        if let Some(s) = self.slots.get_mut(index) {
-            *s = Slot::Done(entry);
+    pub fn finish(&mut self, id: usize, entry: Entry) {
+        if let Some(pos) = self.pos_of(id) {
+            self.slots[pos].1 = Slot::Done(entry);
         }
+    }
+
+    /// Remove the current slot, returning its `(id, state)`. The cursor clamps to
+    /// the new length.
+    #[cfg_attr(not(feature = "gen"), allow(dead_code))]
+    pub fn remove_current(&mut self) -> Option<(usize, Slot)> {
+        if self.current >= self.slots.len() {
+            return None;
+        }
+        let removed = self.slots.remove(self.current);
+        if self.current >= self.slots.len() {
+            self.current = self.slots.len().saturating_sub(1);
+        }
+        self.follow_edge = self.at_edge();
+        Some(removed)
     }
 }
 
@@ -217,7 +246,7 @@ mod tests {
     #[test]
     fn queued_then_generates_then_done() {
         let mut g = Gallery::live();
-        g.push_queued(3);
+        g.push_queued(0, 3);
         assert_eq!(g.len(), 3);
         assert!(matches!(g.current_slot(), Some(Slot::Queued)));
         // start image 0 -> follows it
@@ -236,7 +265,7 @@ mod tests {
     #[test]
     fn navigating_back_holds_position() {
         let mut g = Gallery::live();
-        g.push_queued(3);
+        g.push_queued(0, 3);
         g.start(0);
         g.finish(0, entry("a", None));
         g.start(1);
@@ -245,6 +274,24 @@ mod tests {
         assert_eq!(g.current, 0, "stepped back to inspect");
         g.start(2);
         assert_eq!(g.current, 0, "held position; not following");
+    }
+
+    #[test]
+    fn remove_keeps_ids_stable() {
+        let mut g = Gallery::live();
+        g.push_queued(0, 3); // ids 0,1,2
+        g.current = 1;
+        let removed = g.remove_current();
+        assert_eq!(removed.map(|(id, _)| id), Some(1));
+        assert_eq!(g.len(), 2);
+        // ids 0 and 2 survive; events for id 2 still land on the right slot
+        g.start(2);
+        g.finish(2, entry("c", None));
+        assert!(g
+            .slots
+            .iter()
+            .any(|(id, s)| *id == 2 && matches!(s, Slot::Done(_))));
+        assert!(g.slots.iter().all(|(id, _)| *id != 1), "id 1 gone");
     }
 
     #[test]
