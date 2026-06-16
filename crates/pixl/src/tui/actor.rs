@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
-use pixl_gen::{CandleSdxlGenerator, GenParams, GenRequest, Generator};
+use pixl_gen::{CandleSdxlGenerator, GenRequest, Generator};
 
 use crate::cli::GenerateArgs;
 use crate::tui::gallery::Entry;
@@ -19,7 +19,11 @@ use crate::tui::gallery::Entry;
 /// `cancel` flag instead, since the actor is busy generating and not polling
 /// this channel during a batch.
 pub enum GenCommand {
-    Generate { prompt: String, count: u32 },
+    Generate {
+        prompt: String,
+        negative: String,
+        count: u32,
+    },
 }
 
 /// Events streamed back to the gallery.
@@ -74,8 +78,12 @@ impl Actor {
         }
     }
 
-    pub fn generate(&self, prompt: String, count: u32) {
-        let _ = self.cmd.send(GenCommand::Generate { prompt, count });
+    pub fn generate(&self, prompt: String, negative: String, count: u32) {
+        let _ = self.cmd.send(GenCommand::Generate {
+            prompt,
+            negative,
+            count,
+        });
     }
 
     /// Ask the current batch to stop after the in-flight image.
@@ -121,16 +129,18 @@ fn run(
     // Global image index across batches/reruns so every image gets a fresh seed
     // and a unique filename.
     let mut next_index = 0usize;
-    while let Ok(GenCommand::Generate { prompt, count }) = cmd_rx.recv() {
+    while let Ok(GenCommand::Generate {
+        prompt,
+        negative,
+        count,
+    }) = cmd_rx.recv()
+    {
         cancel.store(false, Ordering::Relaxed);
         let _ = evt_tx.send(GenEvent::BatchStarted { total: count });
         let req = GenRequest {
             prompt: prompt.clone(),
-            params: GenParams {
-                steps: args.steps,
-                guidance: args.cfg,
-                base_seed: args.seed,
-            },
+            negative: negative.clone(),
+            params: crate::gen_params(&args),
         };
         let slug = crate::slugify(&prompt);
         for _ in 0..count {

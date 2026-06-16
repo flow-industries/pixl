@@ -40,7 +40,7 @@ ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without
 the model:
 
 ```
-left/right  navigate    s  save    r  rerun    e  edit prompt    c  cancel    q  quit
+left/right  navigate   s  save   t  modifiers   r  rerun   e  edit prompt   c  cancel   q  quit
 ```
 
 Elsewhere — or when piping, with `--json`, or `--no-view` — it falls back to the headless
@@ -52,6 +52,22 @@ pixl view ~/.pixl/<run>
 
 The gallery ships in the default build. For a no-GPU build that still includes it (and
 `pixl view`), use `--no-default-features --features view`.
+
+## Sprite assets
+
+By default pixl uses SDXL-Turbo (fast, but CFG-free, so it ignores negative prompts) plus the
+pixel-art LoRA, which leans toward busy *scenes*. For an isolated single sprite, switch to full
+SDXL so CFG and negative prompts take effect:
+
+```bash
+pixl --model sdxl "a wooden treasure chest" \
+  --negative "scene, multiple objects, background, shadow"
+```
+
+`--model sdxl` defaults to cfg 7 / 25 steps (negatives only bite at cfg > 1). In the gallery,
+press `t` for a checklist of one-key modifiers — single subject, plain background, item icon,
+no shadow, keyable background — that fold isolation fragments onto your prompt (and the matching
+negatives). Toggle, press Enter, and it regenerates with the already-loaded model.
 
 ## License
 

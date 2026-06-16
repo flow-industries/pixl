@@ -176,6 +176,7 @@ impl CandleSdxlGenerator {
         tok: &Tokenizer,
         clip: &clip::ClipTextTransformer,
         prompt: &str,
+        negative: &str,
         use_guide: bool,
     ) -> Result<Tensor> {
         let max = self.cfg.clip.max_position_embeddings;
@@ -200,23 +201,30 @@ impl CandleSdxlGenerator {
         };
         let cond = clip.forward(&tokens(prompt)?)?;
         if use_guide {
-            let uncond = clip.forward(&tokens("")?)?;
+            let uncond = clip.forward(&tokens(negative)?)?;
             Ok(Tensor::cat(&[uncond, cond], 0)?.to_dtype(self.dtype)?)
         } else {
             Ok(cond.to_dtype(self.dtype)?)
         }
     }
 
-    fn text_embeddings(&self, prompt: &str, use_guide: bool) -> Result<Tensor> {
-        let e1 = self.encode(&self.tok1, &self.clip1, prompt, use_guide)?;
-        let e2 = self.encode(&self.tok2, &self.clip2, prompt, use_guide)?;
+    fn text_embeddings(&self, prompt: &str, negative: &str, use_guide: bool) -> Result<Tensor> {
+        let e1 = self.encode(&self.tok1, &self.clip1, prompt, negative, use_guide)?;
+        let e2 = self.encode(&self.tok2, &self.clip2, prompt, negative, use_guide)?;
         Ok(Tensor::cat(&[e1, e2], D::Minus1)?)
     }
 
-    fn render(&self, prompt: &str, steps: usize, guidance: f64, seed: u64) -> Result<RgbImage> {
+    fn render(
+        &self,
+        prompt: &str,
+        negative: &str,
+        steps: usize,
+        guidance: f64,
+        seed: u64,
+    ) -> Result<RgbImage> {
         self.device.set_seed(seed)?;
         let use_guide = guidance > 1.0;
-        let text = self.text_embeddings(prompt, use_guide)?;
+        let text = self.text_embeddings(prompt, negative, use_guide)?;
 
         let mut scheduler = self.cfg.build_scheduler(steps)?;
         let (lh, lw) = (self.height / 8, self.width / 8);
@@ -268,6 +276,7 @@ impl Generator for CandleSdxlGenerator {
         let image = self
             .render(
                 &req.prompt,
+                &req.negative,
                 req.params.steps as usize,
                 req.params.guidance as f64,
                 seed,

@@ -40,6 +40,44 @@ enum Status {
     Error(String),
 }
 
+/// A toggleable prompt modifier: appends `pos` to the prompt and `neg` to the
+/// negative prompt when enabled. Negatives only bite on `--model sdxl` (cfg > 1).
+#[cfg(feature = "gen")]
+struct PromptMod {
+    label: &'static str,
+    pos: &'static str,
+    neg: &'static str,
+}
+
+#[cfg(feature = "gen")]
+const MODIFIERS: &[PromptMod] = &[
+    PromptMod {
+        label: "single subject (isolated, centered)",
+        pos: "a single subject, centered, isolated object",
+        neg: "scene, multiple objects, collage, tilesheet, grid",
+    },
+    PromptMod {
+        label: "plain background",
+        pos: "on a plain solid-color background, simple background",
+        neg: "landscape, scenery, background details",
+    },
+    PromptMod {
+        label: "item icon framing",
+        pos: "game item icon, inventory sprite, game asset",
+        neg: "",
+    },
+    PromptMod {
+        label: "no shadow / ground",
+        pos: "",
+        neg: "shadow, ground, grass, floor",
+    },
+    PromptMod {
+        label: "keyable magenta background",
+        pos: "on a solid flat magenta background",
+        neg: "",
+    },
+];
+
 /// The currently displayed image: the decoded source is kept resident so pane
 /// resizes can re-derive the scale without touching disk, plus a protocol
 /// pre-scaled by the largest integer factor that fits the pane (a clean, uniform
@@ -96,9 +134,15 @@ struct App {
     #[cfg(feature = "gen")]
     last_prompt: String,
     #[cfg(feature = "gen")]
+    base_negative: String,
+    #[cfg(feature = "gen")]
     count: u32,
     #[cfg(feature = "gen")]
     model_line: Option<String>,
+    #[cfg(feature = "gen")]
+    panel: bool,
+    #[cfg(feature = "gen")]
+    mods: Vec<bool>,
 }
 
 impl App {
@@ -204,7 +248,7 @@ impl App {
         .split(f.area());
 
         self.render_title(f, chunks[0]);
-        self.render_image(f, chunks[1]);
+        self.render_main(f, chunks[1]);
         f.render_widget(self.status_line(), chunks[2]);
         self.render_footer(f, chunks[3]);
     }
@@ -279,6 +323,48 @@ impl App {
         }
     }
 
+    fn render_main(&mut self, f: &mut Frame, area: Rect) {
+        #[cfg(feature = "gen")]
+        if self.panel {
+            self.render_panel(f, area);
+            return;
+        }
+        self.render_image(f, area);
+    }
+
+    #[cfg(feature = "gen")]
+    fn render_panel(&self, f: &mut Frame, area: Rect) {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "prompt modifiers",
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "1-9 toggle · Enter regenerate · Esc/t close",
+                Style::new().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+        ];
+        for (i, m) in MODIFIERS.iter().enumerate() {
+            let on = self.mods.get(i).copied().unwrap_or(false);
+            let (mark, style) = if on {
+                ("[x]", Style::new().fg(Color::Green))
+            } else {
+                ("[ ]", Style::new().fg(Color::Gray))
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} {mark}  ", i + 1), style),
+                Span::raw(m.label),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "negative-prompt modifiers need --model sdxl (cfg > 1)",
+            Style::new().fg(Color::DarkGray),
+        )));
+        f.render_widget(Paragraph::new(lines), area);
+    }
+
     fn render_footer(&self, f: &mut Frame, area: Rect) {
         #[cfg(feature = "gen")]
         if let Some(input) = &self.input {
@@ -317,7 +403,7 @@ impl App {
             if self.static_mode {
                 "←/→ nav · s save · q quit"
             } else {
-                "←/→ nav · s save · r rerun · e edit · c cancel · q quit"
+                "←/→ nav · s save · t toggles · r rerun · e edit · c cancel · q quit"
             }
         }
         #[cfg(not(feature = "gen"))]
@@ -376,6 +462,11 @@ impl App {
             self.on_key_input(key);
             return;
         }
+        #[cfg(feature = "gen")]
+        if self.panel {
+            self.on_key_panel(key);
+            return;
+        }
 
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.gallery.prev(),
@@ -384,6 +475,12 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.gallery.last(),
             KeyCode::Char('s') | KeyCode::Char(' ') => self.save_current(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            #[cfg(feature = "gen")]
+            KeyCode::Char('t') => {
+                if !self.static_mode {
+                    self.panel = true;
+                }
+            }
             #[cfg(feature = "gen")]
             KeyCode::Char('r') => self.rerun(),
             #[cfg(feature = "gen")]
@@ -415,11 +512,61 @@ impl App {
 
     #[cfg(feature = "gen")]
     fn rerun(&mut self) {
-        if self.static_mode || self.last_prompt.is_empty() {
+        if self.static_mode {
+            return;
+        }
+        self.submit();
+    }
+
+    #[cfg(feature = "gen")]
+    fn on_key_panel(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = (c as u8 - b'1') as usize;
+                if i < self.mods.len() {
+                    self.mods[i] = !self.mods[i];
+                }
+            }
+            KeyCode::Enter => {
+                self.panel = false;
+                self.submit();
+            }
+            KeyCode::Esc | KeyCode::Char('t') => self.panel = false,
+            _ => {}
+        }
+    }
+
+    /// Compose the full (prompt, negative) sent to the generator. The base
+    /// subject + base negative for now; the modifier toggles fold in here.
+    #[cfg(feature = "gen")]
+    fn compose(&self) -> (String, String) {
+        let mut pos = self.last_prompt.clone();
+        let mut neg: Vec<String> = Vec::new();
+        if !self.base_negative.trim().is_empty() {
+            neg.push(self.base_negative.clone());
+        }
+        for (i, m) in MODIFIERS.iter().enumerate() {
+            if self.mods.get(i).copied().unwrap_or(false) {
+                if !m.pos.is_empty() {
+                    pos.push_str(", ");
+                    pos.push_str(m.pos);
+                }
+                if !m.neg.is_empty() {
+                    neg.push(m.neg.to_string());
+                }
+            }
+        }
+        (pos, neg.join(", "))
+    }
+
+    #[cfg(feature = "gen")]
+    fn submit(&self) {
+        if self.last_prompt.trim().is_empty() {
             return;
         }
         if let Some(a) = &self.actor {
-            a.generate(self.last_prompt.clone(), self.count);
+            let (p, n) = self.compose();
+            a.generate(p, n, self.count);
         }
     }
 
@@ -455,10 +602,8 @@ impl App {
                 if let Some(s) = self.input.take() {
                     let p = s.trim().to_string();
                     if !p.is_empty() {
-                        self.last_prompt = p.clone();
-                        if let Some(a) = &self.actor {
-                            a.generate(p, self.count);
-                        }
+                        self.last_prompt = p;
+                        self.submit();
                     }
                 }
             }
@@ -550,9 +695,15 @@ pub fn run_static(dir: PathBuf, saved_dir: PathBuf) -> Result<()> {
         #[cfg(feature = "gen")]
         last_prompt: String::new(),
         #[cfg(feature = "gen")]
+        base_negative: String::new(),
+        #[cfg(feature = "gen")]
         count: 0,
         #[cfg(feature = "gen")]
         model_line: None,
+        #[cfg(feature = "gen")]
+        panel: false,
+        #[cfg(feature = "gen")]
+        mods: Vec::new(),
     };
     let res = app.run(&mut terminal);
     ratatui::restore();
@@ -621,8 +772,6 @@ pub fn run_live(
     }
 
     let actor = actor::Actor::spawn(args.clone(), w, h, out_dir.clone());
-    actor.generate(prompt.to_string(), count);
-
     let mut app = App {
         gallery: Gallery::live(),
         picker,
@@ -635,9 +784,13 @@ pub fn run_live(
         status: Status::Loading,
         input: None,
         last_prompt: prompt.to_string(),
+        base_negative: args.negative.clone(),
         count,
         model_line: None,
+        panel: false,
+        mods: vec![false; MODIFIERS.len()],
     };
+    app.submit();
     let res = app.run(&mut terminal);
 
     if let Some(a) = &app.actor {

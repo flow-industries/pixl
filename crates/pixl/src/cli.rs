@@ -77,15 +77,19 @@ pub struct GenerateArgs {
     /// Force the logical cell size in source pixels (bypass grid detection).
     #[arg(long)]
     pub pixel_size: Option<u32>,
-    /// Diffusion steps.
-    #[arg(long, default_value_t = 8)]
-    pub steps: u32,
+    /// Diffusion steps (default: 8 for Turbo, 25 for SDXL).
+    #[arg(long)]
+    pub steps: Option<u32>,
     /// Base seed; per-image seed is base + index.
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
-    /// Classifier-free guidance scale (1.0 for the Lightning/Turbo path).
-    #[arg(long, default_value_t = 1.0)]
-    pub cfg: f32,
+    /// Classifier-free guidance (default: 1.0 = off for Turbo, 7.0 for SDXL).
+    #[arg(long)]
+    pub cfg: Option<f32>,
+    /// Negative prompt (what to avoid). Only takes effect at cfg > 1, i.e. on
+    /// `--model sdxl`, not the CFG-free Turbo path.
+    #[arg(long, default_value = "")]
+    pub negative: String,
     /// Generation resolution, WxH.
     #[arg(long, default_value = "512x512")]
     pub size: String,

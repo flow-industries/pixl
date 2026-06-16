@@ -210,6 +210,31 @@ fn model_and_loras(args: &GenerateArgs) -> (pixl_gen::BaseModel, Vec<pixl_gen::L
 }
 
 #[cfg(feature = "gen")]
+fn resolve_steps(args: &GenerateArgs) -> u32 {
+    args.steps.unwrap_or(match args.model {
+        cli::ModelArg::Sdxl => 25,
+        cli::ModelArg::Turbo => 8,
+    })
+}
+
+#[cfg(feature = "gen")]
+fn resolve_cfg(args: &GenerateArgs) -> f32 {
+    args.cfg.unwrap_or(match args.model {
+        cli::ModelArg::Sdxl => 7.0,
+        cli::ModelArg::Turbo => 1.0,
+    })
+}
+
+#[cfg(feature = "gen")]
+fn gen_params(args: &GenerateArgs) -> pixl_gen::GenParams {
+    pixl_gen::GenParams {
+        steps: resolve_steps(args),
+        guidance: resolve_cfg(args),
+        base_seed: args.seed,
+    }
+}
+
+#[cfg(feature = "gen")]
 fn push_fail(failures: &std::sync::Mutex<Vec<(usize, String)>>, i: usize, msg: String) {
     failures
         .lock()
@@ -227,7 +252,7 @@ fn generate_metal(
     args: &GenerateArgs,
 ) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator};
+    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenImage, GenRequest, Generator};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -269,7 +294,7 @@ fn generate_metal(
         if args.no_lora && !args.no_postprocess {
             eprintln!("note: --no-lora produces a non-pixel-art image; the pixelize pass has no grid to snap (looks like noise). Drop --no-lora, or add --no-postprocess for the raw render.");
         }
-        if args.cfg > 1.0 && matches!(model, BaseModel::SdxlTurbo) {
+        if resolve_cfg(args) > 1.0 && matches!(model, BaseModel::SdxlTurbo) {
             eprintln!("note: --cfg > 1 has no effect on SDXL-Turbo (CFG-distilled); use --model sdxl for guidance");
         }
     }
@@ -313,11 +338,8 @@ fn generate_metal(
 
     let req = GenRequest {
         prompt: prompt.to_string(),
-        params: GenParams {
-            steps: args.steps,
-            guidance: args.cfg,
-            base_seed: args.seed,
-        },
+        negative: args.negative.clone(),
+        params: gen_params(args),
     };
     let slug = slugify(prompt);
     let jobs = if args.jobs > 0 {

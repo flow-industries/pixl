@@ -93,9 +93,12 @@ impl Default for GenParams {
 }
 
 /// One generation request; the backend renders `index` to vary the seed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct GenRequest {
     pub prompt: String,
+    /// CFG unconditional / negative prompt. Only affects output when guidance > 1
+    /// (full SDXL); ignored by the CFG-free Turbo path.
+    pub negative: String,
     pub params: GenParams,
 }
 
