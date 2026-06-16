@@ -14,6 +14,8 @@ use candle_transformers::models::stable_diffusion::{
 };
 use hf_hub::api::sync::ApiBuilder;
 use image::RgbImage;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 use crate::{GenError, GenImage, GenRequest, Generator};
@@ -70,6 +72,7 @@ pub struct CandleSdxlGenerator {
     height: usize,
     step_cb: Option<crate::StepCallback>,
     preview_cb: Option<crate::PreviewCallback>,
+    interrupt: Option<Arc<AtomicBool>>,
 }
 
 impl CandleSdxlGenerator {
@@ -182,6 +185,7 @@ impl CandleSdxlGenerator {
                 height: h,
                 step_cb: None,
                 preview_cb: None,
+                interrupt: None,
             },
             report,
         ))
@@ -256,6 +260,11 @@ impl CandleSdxlGenerator {
         let timesteps = scheduler.timesteps().to_vec();
         let total = timesteps.len();
         for (si, &t) in timesteps.iter().enumerate() {
+            if let Some(f) = &self.interrupt {
+                if f.load(Ordering::Relaxed) {
+                    anyhow::bail!("__cancelled__");
+                }
+            }
             let input = if use_guide {
                 Tensor::cat(&[&latents, &latents], 0)?
             } else {
@@ -376,7 +385,13 @@ impl Generator for CandleSdxlGenerator {
                 req.params.guidance as f64,
                 seed,
             )
-            .map_err(|e| GenError::Backend(e.to_string()))?;
+            .map_err(|e| {
+                if e.to_string() == "__cancelled__" {
+                    GenError::Cancelled
+                } else {
+                    GenError::Backend(e.to_string())
+                }
+            })?;
         Ok(GenImage { image, seed })
     }
 
@@ -386,5 +401,9 @@ impl Generator for CandleSdxlGenerator {
 
     fn set_preview_callback(&mut self, cb: crate::PreviewCallback) {
         self.preview_cb = Some(cb);
+    }
+
+    fn set_interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = Some(flag);
     }
 }

@@ -42,11 +42,11 @@ ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without
 the model:
 
 ```
-left/right  navigate   s  save   x  discard   t  settings   r  rerun   e  edit prompt   c  cancel   q  quit
+left/right  navigate   space  save   s  settings   x  discard   r  rerun   e  edit prompt   c  cancel   q  quit
 ```
 
 Run `pixl` with no arguments to open the gallery idle and configure everything in-app: `e`
-sets the prompt, `t` opens a settings panel (count, cfg, steps, colors, seed, and the prompt
+sets the prompt, `s` opens a settings panel (count, cfg, steps, colors, seed, and the prompt
 modifiers — ↑↓ to select, ←→ to adjust, space to toggle), and `x` discards a slot (cancelling
 it if still queued). Settings persist to `~/.pixl/config.json` between runs.
 
@@ -74,7 +74,7 @@ pixl --model sdxl "a wooden treasure chest" \
 `--model sdxl` defaults to cfg 7 / 25 steps (negatives only bite at cfg > 1). Higher cfg means
 tighter prompt adherence but less variety between seeds — for a constrained subject the results
 can look near-identical; drop `--cfg` to ~4-5 for more varied takes. In the gallery,
-press `t` for the settings panel — it also carries one-key modifiers: single subject, plain background, item icon,
+press `s` for the settings panel — it also carries one-key modifiers: single subject, plain background, item icon,
 no shadow, keyable background — that fold isolation fragments onto your prompt (and the matching
 negatives). Toggle, press Enter, and it regenerates with the already-loaded model.
 

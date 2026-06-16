@@ -35,17 +35,8 @@ use gallery::{save_dest, Gallery, Slot};
 #[derive(Clone)]
 enum Status {
     Loading,
-    Downloading {
-        file: String,
-        done: u64,
-        total: u64,
-    },
-    Generating {
-        done: usize,
-        total: u32,
-        step: usize,
-        steps: usize,
-    },
+    Downloading { file: String, done: u64, total: u64 },
+    Generating { step: usize, steps: usize },
     Idle,
     Error(String),
 }
@@ -709,7 +700,7 @@ impl App {
             if self.static_mode {
                 "←/→ nav · s save · q quit"
             } else {
-                "←/→ nav · s save · x discard · t settings · r rerun · e edit · c cancel · q quit"
+                "←/→ nav · space save · s settings · x discard · r rerun · e edit · c cancel · q quit"
             }
         }
         #[cfg(not(feature = "gen"))]
@@ -739,15 +730,19 @@ impl App {
                 };
                 Line::from(Span::styled(txt, Style::new().fg(Color::Cyan)))
             }
-            Status::Generating {
-                done,
-                total,
-                step,
-                steps,
-            } => Line::from(Span::styled(
-                format!("generating {}/{total} · step {step}/{steps}", done + 1),
-                Style::new().fg(Color::Cyan),
-            )),
+            Status::Generating { step, steps } => {
+                let total = self.gallery.len();
+                let done = self
+                    .gallery
+                    .slots
+                    .iter()
+                    .filter(|(_, s)| matches!(s, Slot::Done(_)))
+                    .count();
+                Line::from(Span::styled(
+                    format!("generating {done}/{total} · step {step}/{steps}"),
+                    Style::new().fg(Color::Cyan),
+                ))
+            }
             Status::Idle => {
                 let s = self.model_line.clone().unwrap_or_else(|| "idle".into());
                 Line::from(Span::styled(s, Style::new().fg(Color::DarkGray)))
@@ -794,10 +789,10 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.gallery.next(),
             KeyCode::Home | KeyCode::Char('g') => self.gallery.first(),
             KeyCode::End | KeyCode::Char('G') => self.gallery.last(),
-            KeyCode::Char('s') | KeyCode::Char(' ') if !repeat => self.save_current(),
+            KeyCode::Char(' ') if !repeat => self.save_current(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             #[cfg(feature = "gen")]
-            KeyCode::Char('t') if !repeat => {
+            KeyCode::Char('s') if !repeat => {
                 if !self.static_mode {
                     self.panel = true;
                 }
@@ -859,7 +854,7 @@ impl App {
                 self.settings.save();
                 self.submit();
             }
-            KeyCode::Esc | KeyCode::Char('t') => {
+            KeyCode::Esc | KeyCode::Char('s') => {
                 self.panel = false;
                 self.settings.save();
             }
@@ -986,10 +981,18 @@ impl App {
                 if let Ok(mut set) = self.skip.lock() {
                     set.insert(id);
                 }
-                if let Slot::Done(e) = &slot {
-                    if e.path.starts_with(&self.out_dir) {
-                        let _ = std::fs::remove_file(&e.path);
+                match &slot {
+                    Slot::Generating(_) => {
+                        if let Some(a) = &self.actor {
+                            a.interrupt();
+                        }
                     }
+                    Slot::Done(e) => {
+                        if e.path.starts_with(&self.out_dir) {
+                            let _ = std::fs::remove_file(&e.path);
+                        }
+                    }
+                    Slot::Queued => {}
                 }
             }
             self.toast = Some("discarded".into());
@@ -1049,19 +1052,13 @@ impl App {
             }
             BatchStarted { start, count } => {
                 self.gallery.push_queued(start, count);
-                self.status = Status::Generating {
-                    done: 0,
-                    total: count,
-                    step: 0,
-                    steps: 0,
-                };
+                self.status = Status::Generating { step: 0, steps: 0 };
             }
             ImageStarted { index } => self.gallery.start(index),
             Step { step, steps } => {
                 if let Status::Generating {
                     step: st,
                     steps: sn,
-                    ..
                 } = &mut self.status
                 {
                     *st = step;
@@ -1074,9 +1071,6 @@ impl App {
             }
             ImageReady { index, entry } => {
                 self.gallery.finish(index, entry);
-                if let Status::Generating { done, .. } = &mut self.status {
-                    *done += 1;
-                }
             }
             ImageFailed { index, error } => {
                 self.toast = Some(format!("image {index} failed: {error}"))

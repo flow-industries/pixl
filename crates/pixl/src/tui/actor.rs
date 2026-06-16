@@ -77,6 +77,7 @@ pub struct Actor {
     cmd: Sender<GenCommand>,
     pub events: Receiver<GenEvent>,
     cancel: Arc<AtomicBool>,
+    interrupt: Arc<AtomicBool>,
     _handle: JoinHandle<()>,
 }
 
@@ -93,14 +94,19 @@ impl Actor {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<GenCommand>();
         let (evt_tx, evt_rx) = crossbeam_channel::unbounded::<GenEvent>();
         let cancel = Arc::new(AtomicBool::new(false));
+        let interrupt = Arc::new(AtomicBool::new(false));
         let handle = {
             let cancel = cancel.clone();
-            std::thread::spawn(move || run(args, w, h, out_dir, cmd_rx, evt_tx, cancel, skip))
+            let interrupt = interrupt.clone();
+            std::thread::spawn(move || {
+                run(args, w, h, out_dir, cmd_rx, evt_tx, cancel, interrupt, skip)
+            })
         };
         Self {
             cmd: cmd_tx,
             events: evt_rx,
             cancel,
+            interrupt,
             _handle: handle,
         }
     }
@@ -127,9 +133,16 @@ impl Actor {
         });
     }
 
-    /// Ask the current batch to stop after the in-flight image.
+    /// Stop the batch and abort the in-flight image.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+        self.interrupt.store(true, Ordering::Relaxed);
+    }
+
+    /// Abort just the in-flight image (the batch continues) — used when its slot
+    /// is discarded mid-generation.
+    pub fn interrupt(&self) {
+        self.interrupt.store(true, Ordering::Relaxed);
     }
 }
 
@@ -142,6 +155,7 @@ fn run(
     cmd_rx: Receiver<GenCommand>,
     evt_tx: Sender<GenEvent>,
     cancel: Arc<AtomicBool>,
+    interrupt: Arc<AtomicBool>,
     skip: Arc<Mutex<HashSet<usize>>>,
 ) {
     let mut args = args;
@@ -184,6 +198,7 @@ fn run(
             });
         }));
     }
+    generator.set_interrupt(interrupt.clone());
 
     let _ = evt_tx.send(GenEvent::Loaded {
         model: report.model.to_string(),
@@ -230,6 +245,7 @@ fn run(
             if is_skipped(id) {
                 continue; // discarded while queued: don't spend the GPU
             }
+            interrupt.store(false, Ordering::Relaxed);
             cur.store(id, Ordering::Relaxed);
             let _ = evt_tx.send(GenEvent::ImageStarted { index: id });
             match generator.generate(&req, id) {
@@ -256,6 +272,12 @@ fn run(
                             });
                         }
                     }
+                }
+                Err(pixl_gen::GenError::Cancelled) => {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    continue; // discarded mid-flight: on to the next
                 }
                 Err(e) => {
                     let _ = evt_tx.send(GenEvent::ImageFailed {

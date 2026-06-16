@@ -136,6 +136,8 @@ pub enum GenError {
     Device(String),
     #[error("backend error: {0}")]
     Backend(String),
+    #[error("cancelled")]
+    Cancelled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -146,6 +148,9 @@ pub trait Generator: Send + Sync {
     fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError>;
     fn set_step_callback(&mut self, _cb: StepCallback) {}
     fn set_preview_callback(&mut self, _cb: PreviewCallback) {}
+    /// A flag the render loop polls between steps; setting it aborts the current
+    /// image with [`GenError::Cancelled`].
+    fn set_interrupt(&mut self, _flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
 }
 
 /// Placeholder backend for builds without a generation feature.
