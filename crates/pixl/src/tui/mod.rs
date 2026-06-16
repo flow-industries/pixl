@@ -88,6 +88,115 @@ const MODIFIERS: &[PromptMod] = &[
     },
 ];
 
+#[cfg(feature = "gen")]
+const PARAM_LABELS: &[&str] = &["count", "cfg", "steps", "colors", "seed"];
+
+/// Editable generation settings, persisted to `~/.pixl/config.json` so a no-arg
+/// run picks up the last configuration.
+#[cfg(feature = "gen")]
+#[derive(Clone)]
+struct Settings {
+    count: u32,
+    cfg: f32,
+    steps: u32,
+    colors: u16,
+    seed: u64,
+    mods: Vec<bool>,
+}
+
+#[cfg(feature = "gen")]
+fn config_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pixl").join("config.json"))
+}
+
+#[cfg(feature = "gen")]
+impl Settings {
+    fn placeholder() -> Self {
+        Self {
+            count: 4,
+            cfg: 1.0,
+            steps: 8,
+            colors: 16,
+            seed: 0,
+            mods: vec![false; MODIFIERS.len()],
+        }
+    }
+
+    /// Defaults (model-aware) <- persisted config <- explicit CLI flags.
+    fn load(args: &crate::cli::GenerateArgs, cli_count: Option<u32>) -> Self {
+        let mut s = Self {
+            count: cli_count.unwrap_or(4),
+            cfg: crate::resolve_cfg(args),
+            steps: crate::resolve_steps(args),
+            colors: args.colors.unwrap_or(16),
+            seed: args.seed.unwrap_or(0),
+            mods: vec![false; MODIFIERS.len()],
+        };
+        if let Some(v) = config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        {
+            if let Some(n) = v["count"].as_u64() {
+                s.count = n as u32;
+            }
+            if let Some(n) = v["cfg"].as_f64() {
+                s.cfg = n as f32;
+            }
+            if let Some(n) = v["steps"].as_u64() {
+                s.steps = n as u32;
+            }
+            if let Some(n) = v["colors"].as_u64() {
+                s.colors = n as u16;
+            }
+            if let Some(n) = v["seed"].as_u64() {
+                s.seed = n;
+            }
+            if let Some(arr) = v["mods"].as_array() {
+                let mut m: Vec<bool> = arr.iter().map(|b| b.as_bool().unwrap_or(false)).collect();
+                m.resize(MODIFIERS.len(), false);
+                s.mods = m;
+            }
+        }
+        // explicit CLI flags win over the persisted config for this run
+        if let Some(n) = cli_count {
+            s.count = n;
+        }
+        if let Some(c) = args.cfg {
+            s.cfg = c;
+        }
+        if let Some(n) = args.steps {
+            s.steps = n;
+        }
+        if let Some(c) = args.colors {
+            s.colors = c;
+        }
+        if let Some(n) = args.seed {
+            s.seed = n;
+        }
+        s
+    }
+
+    fn save(&self) {
+        let Some(path) = config_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let v = serde_json::json!({
+            "count": self.count,
+            "cfg": self.cfg,
+            "steps": self.steps,
+            "colors": self.colors,
+            "seed": self.seed,
+            "mods": self.mods,
+        });
+        if let Ok(t) = serde_json::to_string_pretty(&v) {
+            let _ = std::fs::write(path, t);
+        }
+    }
+}
+
 /// The currently displayed image: the decoded source is kept resident so pane
 /// resizes can re-derive the scale without touching disk, plus a protocol
 /// pre-scaled by the largest integer factor that fits the pane (a clean, uniform
@@ -163,13 +272,13 @@ struct App {
     #[cfg(feature = "gen")]
     base_negative: String,
     #[cfg(feature = "gen")]
-    count: u32,
+    settings: Settings,
     #[cfg(feature = "gen")]
     model_line: Option<String>,
     #[cfg(feature = "gen")]
     panel: bool,
     #[cfg(feature = "gen")]
-    mods: Vec<bool>,
+    panel_row: usize,
     #[cfg(feature = "gen")]
     gen_size: (u32, u32),
     #[cfg(feature = "gen")]
@@ -376,7 +485,7 @@ impl App {
         }
         if self.gallery.is_empty() {
             f.render_widget(
-                Paragraph::new("waiting for the first image…")
+                Paragraph::new(self.idle_message())
                     .alignment(Alignment::Center)
                     .wrap(Wrap { trim: true }),
                 area,
@@ -389,6 +498,14 @@ impl App {
             #[cfg(feature = "gen")]
             self.render_pending(f, area);
         }
+    }
+
+    fn idle_message(&self) -> &'static str {
+        #[cfg(feature = "gen")]
+        if self.last_prompt.trim().is_empty() {
+            return "press e to set a prompt · t for settings";
+        }
+        "waiting for the first image…"
     }
 
     fn title_prompt(&self) -> String {
@@ -484,33 +601,71 @@ impl App {
     }
 
     #[cfg(feature = "gen")]
+    fn param_value(&self, i: usize) -> String {
+        match i {
+            0 => self.settings.count.to_string(),
+            1 => format!("{:.1}", self.settings.cfg),
+            2 => self.settings.steps.to_string(),
+            3 => {
+                if self.settings.colors == 0 {
+                    "all".into()
+                } else {
+                    self.settings.colors.to_string()
+                }
+            }
+            4 => self.settings.seed.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    #[cfg(feature = "gen")]
     fn render_panel(&self, f: &mut Frame, area: Rect) {
+        let np = PARAM_LABELS.len();
         let mut lines = vec![
             Line::from(Span::styled(
-                "prompt modifiers",
+                "settings",
                 Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "1-9 toggle · Enter regenerate · Esc/t close",
+                "↑↓ select · ←→ adjust · space toggle · Enter generate · Esc close",
                 Style::new().fg(Color::DarkGray),
             )),
             Line::from(""),
         ];
-        for (i, m) in MODIFIERS.iter().enumerate() {
-            let on = self.mods.get(i).copied().unwrap_or(false);
-            let (mark, style) = if on {
-                ("[x]", Style::new().fg(Color::Green))
+        for (i, label) in PARAM_LABELS.iter().enumerate() {
+            let sel = self.panel_row == i;
+            let cur = if sel { "›" } else { " " };
+            let lstyle = if sel {
+                Style::new().fg(Color::Cyan)
             } else {
-                ("[ ]", Style::new().fg(Color::Gray))
+                Style::new().fg(Color::Gray)
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {} {mark}  ", i + 1), style),
+                Span::styled(format!(" {cur} {label:<7} "), lstyle),
+                Span::styled(self.param_value(i), Style::new().fg(Color::White)),
+            ]));
+        }
+        lines.push(Line::from(""));
+        for (j, m) in MODIFIERS.iter().enumerate() {
+            let sel = self.panel_row == np + j;
+            let on = self.settings.mods.get(j).copied().unwrap_or(false);
+            let cur = if sel { "›" } else { " " };
+            let mark = if on { "[x]" } else { "[ ]" };
+            let style = if on {
+                Style::new().fg(Color::Green)
+            } else if sel {
+                Style::new().fg(Color::Cyan)
+            } else {
+                Style::new().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {cur} {mark} "), style),
                 Span::raw(m.label),
             ]));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "negative-prompt modifiers need --model sdxl (cfg > 1)",
+            "negative-prompt toggles need --model sdxl (cfg > 1)",
             Style::new().fg(Color::DarkGray),
         )));
         f.render_widget(Paragraph::new(lines), area);
@@ -554,7 +709,7 @@ impl App {
             if self.static_mode {
                 "←/→ nav · s save · q quit"
             } else {
-                "←/→ nav · s save · x discard · t toggles · r rerun · e edit · c cancel · q quit"
+                "←/→ nav · s save · x discard · t settings · r rerun · e edit · c cancel · q quit"
             }
         }
         #[cfg(not(feature = "gen"))]
@@ -688,19 +843,86 @@ impl App {
 
     #[cfg(feature = "gen")]
     fn on_key_panel(&mut self, key: KeyEvent) {
+        let total = PARAM_LABELS.len() + MODIFIERS.len();
         match key.code {
-            KeyCode::Char(c @ '1'..='9') => {
-                let i = (c as u8 - b'1') as usize;
-                if i < self.mods.len() {
-                    self.mods[i] = !self.mods[i];
+            KeyCode::Up | KeyCode::Char('k') => self.panel_row = self.panel_row.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.panel_row + 1 < total {
+                    self.panel_row += 1;
                 }
             }
+            KeyCode::Left => self.adjust(false),
+            KeyCode::Right => self.adjust(true),
+            KeyCode::Char(' ') => self.toggle_row(),
             KeyCode::Enter => {
                 self.panel = false;
+                self.settings.save();
                 self.submit();
             }
-            KeyCode::Esc | KeyCode::Char('t') => self.panel = false,
+            KeyCode::Esc | KeyCode::Char('t') => {
+                self.panel = false;
+                self.settings.save();
+            }
             _ => {}
+        }
+    }
+
+    #[cfg(feature = "gen")]
+    fn adjust(&mut self, up: bool) {
+        let np = PARAM_LABELS.len();
+        if self.panel_row >= np {
+            self.toggle_row();
+            return;
+        }
+        let s = &mut self.settings;
+        match self.panel_row {
+            0 => {
+                s.count = if up {
+                    (s.count + 1).min(64)
+                } else {
+                    s.count.saturating_sub(1).max(1)
+                }
+            }
+            1 => {
+                s.cfg = if up {
+                    (s.cfg + 0.5).min(15.0)
+                } else {
+                    (s.cfg - 0.5).max(1.0)
+                }
+            }
+            2 => {
+                s.steps = if up {
+                    (s.steps + 1).min(60)
+                } else {
+                    s.steps.saturating_sub(1).max(1)
+                }
+            }
+            3 => {
+                s.colors = if up {
+                    (s.colors + 1).min(64)
+                } else {
+                    s.colors.saturating_sub(1)
+                }
+            }
+            4 => {
+                s.seed = if up {
+                    s.seed.wrapping_add(1)
+                } else {
+                    s.seed.wrapping_sub(1)
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "gen")]
+    fn toggle_row(&mut self) {
+        let np = PARAM_LABELS.len();
+        if self.panel_row >= np {
+            let i = self.panel_row - np;
+            if let Some(b) = self.settings.mods.get_mut(i) {
+                *b = !*b;
+            }
         }
     }
 
@@ -714,7 +936,7 @@ impl App {
             neg.push(self.base_negative.clone());
         }
         for (i, m) in MODIFIERS.iter().enumerate() {
-            if self.mods.get(i).copied().unwrap_or(false) {
+            if self.settings.mods.get(i).copied().unwrap_or(false) {
                 if !m.pos.is_empty() {
                     pos.push_str(", ");
                     pos.push_str(m.pos);
@@ -734,7 +956,8 @@ impl App {
         }
         if let Some(a) = &self.actor {
             let (p, n) = self.compose();
-            a.generate(p, n, self.count);
+            let s = &self.settings;
+            a.generate(p, n, s.count, s.cfg, s.steps, s.seed, s.colors);
         }
     }
 
@@ -896,13 +1119,13 @@ pub fn run_static(dir: PathBuf, saved_dir: PathBuf) -> Result<()> {
         #[cfg(feature = "gen")]
         base_negative: String::new(),
         #[cfg(feature = "gen")]
-        count: 0,
+        settings: Settings::placeholder(),
         #[cfg(feature = "gen")]
         model_line: None,
         #[cfg(feature = "gen")]
         panel: false,
         #[cfg(feature = "gen")]
-        mods: Vec::new(),
+        panel_row: 0,
         #[cfg(feature = "gen")]
         gen_size: (0, 0),
         #[cfg(feature = "gen")]
@@ -955,7 +1178,7 @@ fn load_dir(dir: &PathBuf) -> Result<Vec<gallery::Entry>> {
 #[cfg(feature = "gen")]
 pub fn run_live(
     prompt: &str,
-    count: u32,
+    count: Option<u32>,
     out_dir: PathBuf,
     w: u32,
     h: u32,
@@ -979,6 +1202,7 @@ pub fn run_live(
     }
 
     let skip = Arc::new(Mutex::new(HashSet::new()));
+    let settings = Settings::load(args, count);
     let actor = actor::Actor::spawn(args.clone(), w, h, out_dir.clone(), skip.clone());
     let mut app = App {
         gallery: Gallery::live(),
@@ -993,10 +1217,10 @@ pub fn run_live(
         input: None,
         last_prompt: prompt.to_string(),
         base_negative: args.negative.clone(),
-        count,
+        settings,
         model_line: None,
         panel: false,
-        mods: vec![false; MODIFIERS.len()],
+        panel_row: 0,
         gen_size: (w, h),
         tick: 0,
         skip,

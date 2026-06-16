@@ -24,6 +24,10 @@ pub enum GenCommand {
         prompt: String,
         negative: String,
         count: u32,
+        cfg: f32,
+        steps: u32,
+        seed: u64,
+        colors: u16,
     },
 }
 
@@ -101,11 +105,25 @@ impl Actor {
         }
     }
 
-    pub fn generate(&self, prompt: String, negative: String, count: u32) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate(
+        &self,
+        prompt: String,
+        negative: String,
+        count: u32,
+        cfg: f32,
+        steps: u32,
+        seed: u64,
+        colors: u16,
+    ) {
         let _ = self.cmd.send(GenCommand::Generate {
             prompt,
             negative,
             count,
+            cfg,
+            steps,
+            seed,
+            colors,
         });
     }
 
@@ -126,6 +144,7 @@ fn run(
     cancel: Arc<AtomicBool>,
     skip: Arc<Mutex<HashSet<usize>>>,
 ) {
+    let mut args = args;
     let _ = evt_tx.send(GenEvent::Loading);
     let (model, loras) = crate::model_and_loras(&args);
     let prog: pixl_gen::ProgressFn = {
@@ -180,8 +199,16 @@ fn run(
         prompt,
         negative,
         count,
+        cfg,
+        steps,
+        seed,
+        colors,
     }) = cmd_rx.recv()
     {
+        args.cfg = Some(cfg);
+        args.steps = Some(steps);
+        args.seed = Some(seed);
+        args.colors = Some(colors);
         cancel.store(false, Ordering::Relaxed);
         let _ = evt_tx.send(GenEvent::BatchStarted {
             start: next_index,

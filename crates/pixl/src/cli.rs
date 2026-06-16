@@ -72,8 +72,8 @@ pub struct GenerateArgs {
     #[arg(long, value_enum, default_value_t = ModelArg::Turbo)]
     pub model: ModelArg,
     /// Palette size for the post-process pass (0 = keep all distinct cell colors).
-    #[arg(short = 'c', long, default_value_t = 16)]
-    pub colors: u16,
+    #[arg(short = 'c', long)]
+    pub colors: Option<u16>,
     /// Force the logical cell size in source pixels (bypass grid detection).
     #[arg(long)]
     pub pixel_size: Option<u32>,
@@ -81,8 +81,8 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub steps: Option<u32>,
     /// Base seed; per-image seed is base + index.
-    #[arg(long, default_value_t = 0)]
-    pub seed: u64,
+    #[arg(long)]
+    pub seed: Option<u64>,
     /// Classifier-free guidance (default: 1.0 = off for Turbo, 7.0 for SDXL).
     #[arg(long)]
     pub cfg: Option<f32>,

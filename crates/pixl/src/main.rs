@@ -98,31 +98,34 @@ fn resolve_out(input: &Path, out: &Option<PathBuf>, multi: bool) -> PathBuf {
     }
 }
 
+#[cfg(feature = "gen")]
 const DEFAULT_COUNT: u32 = 4;
 
-/// Resolve `[COUNT] PROMPT [OUT_DIR]`: a leading numeric arg is COUNT (default 4
-/// when absent), the next is the prompt, the last is an optional output dir.
-fn resolve_positionals(pos: &[String]) -> Result<(u32, String, Option<PathBuf>)> {
+/// Resolve `[COUNT] PROMPT [OUT_DIR]`: a leading numeric arg is COUNT, the next
+/// is the prompt, the last is an optional output dir. An empty prompt is allowed
+/// (the gallery opens idle so you can set one in-app); `None` count means default.
+fn resolve_positionals(pos: &[String]) -> Result<(Option<u32>, String, Option<PathBuf>)> {
     match pos {
-        [] => anyhow::bail!("missing PROMPT (usage: pixl [COUNT] <PROMPT> [OUT_DIR])"),
+        [] => Ok((None, String::new(), None)),
         [a] => {
-            if a.parse::<u32>().is_ok() {
-                anyhow::bail!("missing PROMPT (got only a count)");
+            if let Ok(n) = a.parse::<u32>() {
+                Ok((Some(n), String::new(), None))
+            } else {
+                Ok((None, a.clone(), None))
             }
-            Ok((DEFAULT_COUNT, a.clone(), None))
         }
         [a, b] => {
             if let Ok(n) = a.parse::<u32>() {
-                Ok((n, b.clone(), None))
+                Ok((Some(n), b.clone(), None))
             } else {
-                Ok((DEFAULT_COUNT, a.clone(), Some(PathBuf::from(b))))
+                Ok((None, a.clone(), Some(PathBuf::from(b))))
             }
         }
         [a, b, c] => {
             let n = a
                 .parse::<u32>()
                 .map_err(|_| anyhow::anyhow!("COUNT must be a number, got {a:?}"))?;
-            Ok((n, b.clone(), Some(PathBuf::from(c))))
+            Ok((Some(n), b.clone(), Some(PathBuf::from(c))))
         }
         _ => anyhow::bail!("too many positional arguments (expected [COUNT] <PROMPT> [OUT_DIR])"),
     }
@@ -146,9 +149,29 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
             if tui::run_live(&prompt, count, out.clone(), w, h, &args, saved_dir)? {
                 return Ok(());
             }
-            return generate_metal(&prompt, count, Some(out), w, h, &args);
+            if prompt.trim().is_empty() {
+                anyhow::bail!("missing PROMPT (usage: pixl [COUNT] <PROMPT> [OUT_DIR])");
+            }
+            return generate_metal(
+                &prompt,
+                count.unwrap_or(DEFAULT_COUNT),
+                Some(out),
+                w,
+                h,
+                &args,
+            );
         }
-        generate_metal(&prompt, count, out_dir, w, h, &args)
+        if prompt.trim().is_empty() {
+            anyhow::bail!("missing PROMPT (usage: pixl [COUNT] <PROMPT> [OUT_DIR])");
+        }
+        generate_metal(
+            &prompt,
+            count.unwrap_or(DEFAULT_COUNT),
+            out_dir,
+            w,
+            h,
+            &args,
+        )
     }
     #[cfg(not(feature = "gen"))]
     {
@@ -230,7 +253,7 @@ fn gen_params(args: &GenerateArgs) -> pixl_gen::GenParams {
     pixl_gen::GenParams {
         steps: resolve_steps(args),
         guidance: resolve_cfg(args),
-        base_seed: args.seed,
+        base_seed: args.seed.unwrap_or(0),
     }
 }
 
@@ -513,7 +536,7 @@ fn postprocess(
     });
     let params = PixelizeParams {
         pixel_size: args.pixel_size,
-        max_colors: args.colors,
+        max_colors: args.colors.unwrap_or(16),
         ..Default::default()
     };
     let (small, report) = pixelize(&rgba, &params)?;
@@ -789,24 +812,25 @@ fn human(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    fn r(v: &[&str]) -> (u32, String, Option<PathBuf>) {
+    fn r(v: &[&str]) -> (Option<u32>, String, Option<PathBuf>) {
         resolve_positionals(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
     }
 
     #[test]
     fn resolves_optional_count() {
-        assert_eq!(r(&["a cozy tavern"]), (4, "a cozy tavern".into(), None));
-        assert_eq!(r(&["8", "tavern"]), (8, "tavern".into(), None));
+        assert_eq!(r(&["a cozy tavern"]), (None, "a cozy tavern".into(), None));
+        assert_eq!(r(&["8", "tavern"]), (Some(8), "tavern".into(), None));
         assert_eq!(
             r(&["tavern", "out"]),
-            (4, "tavern".into(), Some(PathBuf::from("out")))
+            (None, "tavern".into(), Some(PathBuf::from("out")))
         );
         assert_eq!(
             r(&["8", "tavern", "out"]),
-            (8, "tavern".into(), Some(PathBuf::from("out")))
+            (Some(8), "tavern".into(), Some(PathBuf::from("out")))
         );
-        assert!(resolve_positionals(&["8".to_string()]).is_err());
-        assert!(resolve_positionals(&[]).is_err());
+        // no prompt / count-only -> empty prompt (gallery opens idle)
+        assert_eq!(r(&[]), (None, String::new(), None));
+        assert_eq!(r(&["8"]), (Some(8), String::new(), None));
     }
 
     #[cfg(feature = "gen")]
