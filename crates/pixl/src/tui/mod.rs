@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -40,13 +40,47 @@ enum Status {
     Error(String),
 }
 
+/// The currently displayed image: the decoded source is kept resident so pane
+/// resizes can re-derive the scale without touching disk, plus a protocol
+/// pre-scaled by the largest integer factor that fits the pane (a clean, uniform
+/// pixel grid, never a fractional upscale).
+struct Shown {
+    index: usize,
+    src: image::DynamicImage,
+    scale: u32,
+    /// Footprint of the scaled image in terminal cells, for centering.
+    cells: (u16, u16),
+    proto: StatefulProtocol,
+}
+
+/// Largest integer factor `k` such that the image at `k` times still fits the pane.
+fn integer_scale(iw: u32, ih: u32, area: Rect, font: ratatui_image::FontSize) -> u32 {
+    if iw == 0 || ih == 0 {
+        return 1;
+    }
+    let pane_w = (area.width as u32).saturating_mul(font.width as u32);
+    let pane_h = (area.height as u32).saturating_mul(font.height as u32);
+    (pane_w / iw).min(pane_h / ih).max(1)
+}
+
+/// Truncate `s` to at most `max` columns, ending with an ellipsis if it was cut.
+fn truncate_ellipsis(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 struct App {
     gallery: Gallery,
     picker: Picker,
-    /// Decoded + encoded protocol for the currently shown image, with its index.
-    /// Only the visible image is kept resident; switching re-decodes (cheap for
-    /// small sprites, and cached by the protocol for repeated renders).
-    proto: Option<(usize, StatefulProtocol)>,
+    /// The currently shown image (only the visible one is kept resident).
+    proto: Option<Shown>,
     saved_dir: PathBuf,
     toast: Option<String>,
     quit: bool,
@@ -106,22 +140,58 @@ impl App {
         Ok(())
     }
 
-    /// Decode + prepare the protocol for the current image if it changed.
-    fn ensure_proto(&mut self) {
-        let want = if self.gallery.is_empty() {
-            None
-        } else {
-            Some(self.gallery.current)
-        };
-        if want == self.proto.as_ref().map(|(i, _)| *i) {
+    /// Decode the current image (if changed) and (re)build its protocol pre-scaled
+    /// to the largest integer multiple that fits `area`.
+    fn ensure_proto(&mut self, area: Rect) {
+        if self.gallery.is_empty() {
+            self.proto = None;
             return;
         }
-        self.proto = None;
-        let Some(idx) = want else { return };
-        let path = self.gallery.entries[idx].path.clone();
-        if let Ok(img) = image::open(&path) {
-            self.proto = Some((idx, self.picker.new_resize_protocol(img)));
+        let idx = self.gallery.current;
+        let font = self.picker.font_size();
+
+        // Nothing to do if it's the same image already built at the right scale.
+        if let Some(s) = &self.proto {
+            if s.index == idx && s.scale == integer_scale(s.src.width(), s.src.height(), area, font)
+            {
+                return;
+            }
         }
+
+        // Reuse the decoded source across pane resizes; hit disk only on a new image.
+        let src = match &self.proto {
+            Some(s) if s.index == idx => s.src.clone(),
+            _ => match image::open(&self.gallery.entries[idx].path) {
+                Ok(img) => img,
+                Err(_) => {
+                    self.proto = None;
+                    return;
+                }
+            },
+        };
+
+        let scale = integer_scale(src.width(), src.height(), area, font);
+        let scaled = if scale <= 1 {
+            src.clone()
+        } else {
+            src.resize_exact(
+                src.width() * scale,
+                src.height() * scale,
+                image::imageops::FilterType::Nearest,
+            )
+        };
+        let cells = (
+            scaled.width().div_ceil(font.width.max(1) as u32) as u16,
+            scaled.height().div_ceil(font.height.max(1) as u32) as u16,
+        );
+        let proto = self.picker.new_resize_protocol(scaled);
+        self.proto = Some(Shown {
+            index: idx,
+            src,
+            scale,
+            cells,
+            proto,
+        });
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -139,13 +209,15 @@ impl App {
         self.render_footer(f, chunks[3]);
     }
 
-    fn render_title(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+    fn render_title(&self, f: &mut Frame, area: Rect) {
         let total = self.gallery.len();
         let idx = if total == 0 {
             0
         } else {
             self.gallery.current + 1
         };
+        let saved = self.gallery.current().map(|e| e.saved).unwrap_or(false);
+
         let mut spans = vec![
             Span::styled(
                 " pixl ",
@@ -156,24 +228,41 @@ impl App {
             ),
             Span::raw(format!(" {idx}/{total}")),
         ];
-        if self.gallery.current().map(|e| e.saved).unwrap_or(false) {
+        if saved {
             spans.push(Span::styled("  saved", Style::new().fg(Color::Green)));
         }
-        if let Some(p) = self.gallery.current().map(|e| e.prompt.clone()) {
-            if !p.is_empty() {
-                spans.push(Span::styled(format!("  {p}"), Style::new().fg(Color::Gray)));
-            }
+        // Truncate the prompt to the remaining width so the title stays one line.
+        let used = 6 + format!(" {idx}/{total}").chars().count() + if saved { 7 } else { 0 } + 2;
+        let budget = (area.width as usize).saturating_sub(used);
+        let prompt = self
+            .gallery
+            .current()
+            .map(|e| truncate_ellipsis(&e.prompt, budget))
+            .unwrap_or_default();
+        if !prompt.is_empty() {
+            spans.push(Span::styled(
+                format!("  {prompt}"),
+                Style::new().fg(Color::Gray),
+            ));
         }
         f.render_widget(Line::from(spans), area);
     }
 
-    fn render_image(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        self.ensure_proto();
-        if let Some((_, proto)) = &mut self.proto {
+    fn render_image(&mut self, f: &mut Frame, area: Rect) {
+        self.ensure_proto(area);
+        if let Some(shown) = &mut self.proto {
+            let w = shown.cells.0.min(area.width);
+            let h = shown.cells.1.min(area.height);
+            let rect = Rect {
+                x: area.x + area.width.saturating_sub(w) / 2,
+                y: area.y + area.height.saturating_sub(h) / 2,
+                width: w,
+                height: h,
+            };
             f.render_stateful_widget(
                 StatefulImage::default().resize(Resize::Fit(None)),
-                area,
-                proto,
+                rect,
+                &mut shown.proto,
             );
         } else {
             let msg = if self.gallery.is_empty() {
@@ -190,12 +279,24 @@ impl App {
         }
     }
 
-    fn render_footer(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+    fn render_footer(&self, f: &mut Frame, area: Rect) {
         #[cfg(feature = "gen")]
         if let Some(input) = &self.input {
+            let label = "new prompt: ";
+            // Keep the cursor (end of input) on screen: scroll to show the tail.
+            let avail = (area.width as usize).saturating_sub(label.chars().count() + 1);
+            let chars: Vec<char> = input.chars().collect();
+            let shown: String = if chars.len() > avail {
+                let start = chars.len() - avail.saturating_sub(1);
+                let mut t = String::from("…");
+                t.extend(&chars[start..]);
+                t
+            } else {
+                input.clone()
+            };
             let line = Line::from(vec![
-                Span::styled("new prompt: ", Style::new().fg(Color::Cyan)),
-                Span::raw(input.as_str()),
+                Span::styled(label, Style::new().fg(Color::Cyan)),
+                Span::raw(shown),
                 Span::styled("▌", Style::new().fg(Color::Cyan)),
             ]);
             f.render_widget(Paragraph::new(line), area);
