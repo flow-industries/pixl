@@ -17,6 +17,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
       - run: cargo test --workspace --no-default-features
+      # The interactive gallery must also build + pass without the GPU/ML stack.
+      - run: cargo clippy --no-default-features --features view --all-targets -- -D warnings
+      - run: cargo test --no-default-features --features view
   gen:
     runs-on: ubuntu-latest
     steps:

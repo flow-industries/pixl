@@ -1,4 +1,6 @@
 mod cli;
+#[cfg(feature = "view")]
+mod tui;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,7 @@ fn main() -> Result<()> {
         Some(Command::Pixelize(args)) => run_pixelize(args),
         Some(Command::Models { action }) => run_models(action),
         Some(Command::Gen(args)) => run_generate(args),
+        Some(Command::View(args)) => run_view(args),
         None => run_generate(cli.generate),
     }
 }
@@ -134,6 +137,17 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
 
     #[cfg(feature = "gen")]
     {
+        if should_launch_gallery(&args) {
+            let out = out_dir.clone().unwrap_or_else(|| default_out_dir(&prompt));
+            let saved_dir = args
+                .saved_dir
+                .clone()
+                .unwrap_or_else(tui::gallery::default_saved_dir);
+            if tui::run_live(&prompt, count, out.clone(), w, h, &args, saved_dir)? {
+                return Ok(());
+            }
+            return generate_metal(&prompt, count, Some(out), w, h, &args);
+        }
         generate_metal(&prompt, count, out_dir, w, h, &args)
     }
     #[cfg(not(feature = "gen"))]
@@ -143,6 +157,56 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
             "this build has no generation backend. Rebuild with --features gen (Metal on macOS, CPU elsewhere) or --features cuda (NVIDIA). `pixl pixelize <img>` works without it."
         )
     }
+}
+
+fn run_view(args: cli::ViewArgs) -> Result<()> {
+    #[cfg(feature = "view")]
+    {
+        let saved_dir = args
+            .saved_dir
+            .clone()
+            .unwrap_or_else(tui::gallery::default_saved_dir);
+        tui::run_static(args.dir, saved_dir)
+    }
+    #[cfg(not(feature = "view"))]
+    {
+        let _ = args;
+        anyhow::bail!("this build has no gallery; rebuild with --features view")
+    }
+}
+
+#[cfg(feature = "gen")]
+fn gallery_allowed(no_view: bool, json: bool, quiet: bool, is_tty: bool) -> bool {
+    is_tty && !no_view && !json && !quiet
+}
+
+#[cfg(feature = "gen")]
+fn should_launch_gallery(args: &GenerateArgs) -> bool {
+    gallery_allowed(
+        args.no_view,
+        args.json,
+        args.quiet,
+        std::io::stdout().is_terminal(),
+    )
+}
+
+#[cfg(feature = "gen")]
+fn model_and_loras(args: &GenerateArgs) -> (pixl_gen::BaseModel, Vec<pixl_gen::LoraRef>) {
+    use pixl_gen::{BaseModel, LoraRef};
+    let model = match args.model {
+        cli::ModelArg::Sdxl => BaseModel::Sdxl,
+        cli::ModelArg::Turbo => BaseModel::SdxlTurbo,
+    };
+    let loras = if args.no_lora {
+        Vec::new()
+    } else {
+        vec![LoraRef {
+            repo: "nerijs/pixel-art-xl".into(),
+            file: "pixel-art-xl.safetensors".into(),
+            scale: args.lora_weight,
+        }]
+    };
+    (model, loras)
 }
 
 #[cfg(feature = "gen")]
@@ -163,9 +227,7 @@ fn generate_metal(
     args: &GenerateArgs,
 ) -> Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-    use pixl_gen::{
-        BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator, LoraRef,
-    };
+    use pixl_gen::{BaseModel, CandleSdxlGenerator, GenImage, GenParams, GenRequest, Generator};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -180,19 +242,7 @@ fn generate_metal(
     if !args.lora_weight.is_finite() {
         anyhow::bail!("--lora-weight must be a finite number");
     }
-    let model = match args.model {
-        cli::ModelArg::Sdxl => BaseModel::Sdxl,
-        cli::ModelArg::Turbo => BaseModel::SdxlTurbo,
-    };
-    let loras = if args.no_lora {
-        Vec::new()
-    } else {
-        vec![LoraRef {
-            repo: "nerijs/pixel-art-xl".into(),
-            file: "pixel-art-xl.safetensors".into(),
-            scale: args.lora_weight,
-        }]
-    };
+    let (model, loras) = model_and_loras(args);
 
     let (mut generator, report) = CandleSdxlGenerator::load(model, w, h, &loras)
         .map_err(|e| anyhow::anyhow!("loading generator: {e}"))?;
@@ -299,10 +349,10 @@ fn generate_metal(
                         pixelize_and_save(gi, i, &out_dir, &slug, &args)
                     }));
                     match r {
-                        Ok(Ok(json)) => {
+                        Ok(Ok(s)) => {
                             saved.fetch_add(1, Ordering::Relaxed);
                             if args.json {
-                                println!("{json}");
+                                println!("{}", s.json(i));
                             }
                         }
                         Ok(Err(e)) => push_fail(&failures, i, e.to_string()),
@@ -377,7 +427,30 @@ fn generate_metal(
     Ok(())
 }
 
-/// Pixelize (unless disabled) + save one generated image. Returns a JSON summary.
+/// One saved image's metadata, for JSON output and the gallery.
+#[cfg(feature = "gen")]
+pub(crate) struct Saved {
+    pub path: PathBuf,
+    pub seed: u64,
+    pub cells: (u32, u32),
+    pub colors: u16,
+}
+
+#[cfg(feature = "gen")]
+impl Saved {
+    fn json(&self, i: usize) -> String {
+        serde_json::json!({
+            "index": i,
+            "seed": self.seed,
+            "path": self.path.to_string_lossy(),
+            "cells": [self.cells.0, self.cells.1],
+            "colors": self.colors,
+        })
+        .to_string()
+    }
+}
+
+/// Pixelize (unless disabled) + save one generated image.
 #[cfg(feature = "gen")]
 fn pixelize_and_save(
     gi: pixl_gen::GenImage,
@@ -385,7 +458,7 @@ fn pixelize_and_save(
     out_dir: &Path,
     slug: &str,
     args: &GenerateArgs,
-) -> Result<String> {
+) -> Result<Saved> {
     let path = out_dir.join(format!("{slug}_{i:03}.png"));
     let (cells, colors) = if args.no_postprocess {
         gi.image
@@ -398,14 +471,12 @@ fn pixelize_and_save(
             .with_context(|| format!("saving {}", path.display()))?;
         (report.out_cells, report.palette_len)
     };
-    Ok(serde_json::json!({
-        "index": i,
-        "seed": gi.seed,
-        "path": path.to_string_lossy(),
-        "cells": [cells.0, cells.1],
-        "colors": colors,
+    Ok(Saved {
+        path,
+        seed: gi.seed,
+        cells,
+        colors,
     })
-    .to_string())
 }
 
 #[cfg(feature = "gen")]
@@ -714,5 +785,15 @@ mod tests {
         );
         assert!(resolve_positionals(&["8".to_string()]).is_err());
         assert!(resolve_positionals(&[]).is_err());
+    }
+
+    #[cfg(feature = "gen")]
+    #[test]
+    fn gallery_decision() {
+        assert!(gallery_allowed(false, false, false, true));
+        assert!(!gallery_allowed(false, false, false, false));
+        assert!(!gallery_allowed(true, false, false, true));
+        assert!(!gallery_allowed(false, true, false, true));
+        assert!(!gallery_allowed(false, false, true, true));
     }
 }

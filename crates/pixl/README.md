@@ -12,6 +12,10 @@ cargo install flow-pixl --no-default-features   # pixelize-only, no GPU/ML, buil
 pixl 100 "stardew valley style house"
 ```
 
+In a graphics-capable terminal (Ghostty, Kitty, iTerm2) it opens an interactive gallery —
+inline images as they generate, arrow-key navigation, save/rerun/edit — and `pixl view <dir>`
+re-browses a finished run; elsewhere it prints a headless batch.
+
 The installed binary is `pixl`. Full documentation, usage, and design notes:
 **https://github.com/flow-industries/pixl**
 

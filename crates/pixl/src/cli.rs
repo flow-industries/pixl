@@ -33,6 +33,8 @@ pub enum Command {
         #[command(subcommand)]
         action: ModelsCmd,
     },
+    /// Browse a finished run directory in the interactive gallery (no generation).
+    View(ViewArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -112,6 +114,16 @@ pub struct GenerateArgs {
     /// macOS background QoS (efficiency cores + I/O throttle) + single-threaded pixelize.
     #[arg(long = "low-prio", visible_aliases = ["bg", "background"], default_value_t = false)]
     pub low_prio: bool,
+    /// Force the interactive image gallery on, even on terminals without inline
+    /// graphics (falls back to unicode half-blocks).
+    #[arg(long, default_value_t = false)]
+    pub view: bool,
+    /// Never launch the gallery; use the headless batch output.
+    #[arg(long, default_value_t = false)]
+    pub no_view: bool,
+    /// Folder that saved favorites are copied into (default ~/.pixl/saved).
+    #[arg(long)]
+    pub saved_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -134,6 +146,15 @@ pub struct PixelizeArgs {
     /// Upscale the result by this integer factor (nearest) for easy viewing.
     #[arg(long, default_value_t = 1)]
     pub scale: u32,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ViewArgs {
+    /// Directory of images to browse.
+    pub dir: PathBuf,
+    /// Folder that saved favorites are copied into (default ~/.pixl/saved).
+    #[arg(long)]
+    pub saved_dir: Option<PathBuf>,
 }
 
 /// Parse a `WxH` (or `N`) size string into (w, h).

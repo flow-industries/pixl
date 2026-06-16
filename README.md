@@ -32,6 +32,27 @@ pixl models ls                               # inspect the model cache
 
 Run `pixl --help` for all options.
 
+## Gallery
+
+In a graphics-capable terminal (Ghostty, Kitty, iTerm2) `pixl` opens an interactive gallery
+that shows images inline as they generate. Flip through them with the arrow keys, mark the
+ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without reloading
+the model:
+
+```
+left/right  navigate    s  save    r  rerun    e  edit prompt    c  cancel    q  quit
+```
+
+Elsewhere — or when piping, with `--json`, or `--no-view` — it falls back to the headless
+batch output. Re-browse a finished run any time:
+
+```bash
+pixl view ~/.pixl/<run>
+```
+
+The gallery ships in the default build. For a no-GPU build that still includes it (and
+`pixl view`), use `--no-default-features --features view`.
+
 ## License
 
 MIT OR Apache-2.0
