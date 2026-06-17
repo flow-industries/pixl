@@ -194,7 +194,14 @@ fn decide_grid(field: &LabField, params: &PixelizeParams) -> ((f32, f32), (f32, 
             } else if b.confidence >= LOW_CONF && a.confidence < LOW_CONF {
                 (borrow(&sx, b.period), (b.period, b.phase + 1.0), low)
             } else {
-                ((a.period, a.phase + 1.0), (b.period, b.phase + 1.0), low)
+                // Both axes strong: AI pixel art rendered from a square image has
+                // square cells. Lend the higher-confidence period to both axes;
+                // two independent periods give non-square cells (a squished image).
+                if a.confidence >= b.confidence {
+                    ((a.period, a.phase + 1.0), borrow(&sy, a.period), low)
+                } else {
+                    (borrow(&sx, b.period), (b.period, b.phase + 1.0), low)
+                }
             }
         }
         (Some(a), None) => (

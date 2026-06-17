@@ -76,7 +76,7 @@ tighter prompt adherence but less variety between seeds — for a constrained su
 can look near-identical; drop `--cfg` to ~4-5 for more varied takes. The seed is random by
 default (set a fixed one in the `s` settings panel for reproducible results). In the gallery,
 press `s` for the settings panel — it also carries one-key modifiers: single subject, plain background, item icon,
-no shadow, keyable background — that fold isolation fragments onto your prompt (and the matching
+no shadow — that fold isolation fragments onto your prompt (and the matching
 negatives). Toggle, press Enter, and it regenerates with the already-loaded model.
 
 ## License

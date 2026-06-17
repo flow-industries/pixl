@@ -72,11 +72,6 @@ const MODIFIERS: &[PromptMod] = &[
         pos: "",
         neg: "shadow, ground, grass, floor",
     },
-    PromptMod {
-        label: "keyable magenta background",
-        pos: "on a solid flat magenta background",
-        neg: "",
-    },
 ];
 
 #[cfg(feature = "gen")]
