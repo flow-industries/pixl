@@ -376,7 +376,12 @@ impl hf_hub::api::Progress for HubProgress {
 
 impl Generator for CandleSdxlGenerator {
     fn generate(&self, req: &GenRequest, index: usize) -> Result<GenImage, GenError> {
-        let seed = req.params.base_seed + index as u64;
+        // Spread per-image seeds far apart (not 0,1,2,3) so the initial noise is
+        // well decorrelated between images in a batch.
+        let seed = req
+            .params
+            .base_seed
+            .wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let image = self
             .render(
                 &req.prompt,

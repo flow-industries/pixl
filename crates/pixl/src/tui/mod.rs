@@ -91,7 +91,8 @@ struct Settings {
     cfg: f32,
     steps: u32,
     colors: u16,
-    seed: u64,
+    /// `None` means a fresh random seed each generate.
+    seed: Option<u64>,
     mods: Vec<bool>,
 }
 
@@ -108,7 +109,7 @@ impl Settings {
             cfg: 1.0,
             steps: 8,
             colors: 16,
-            seed: 0,
+            seed: None,
             mods: vec![false; MODIFIERS.len()],
         }
     }
@@ -120,7 +121,7 @@ impl Settings {
             cfg: crate::resolve_cfg(args),
             steps: crate::resolve_steps(args),
             colors: args.colors.unwrap_or(16),
-            seed: args.seed.unwrap_or(0),
+            seed: args.seed,
             mods: vec![false; MODIFIERS.len()],
         };
         if let Some(v) = config_path()
@@ -139,8 +140,8 @@ impl Settings {
             if let Some(n) = v["colors"].as_u64() {
                 s.colors = n as u16;
             }
-            if let Some(n) = v["seed"].as_u64() {
-                s.seed = n;
+            if v.get("seed").is_some() {
+                s.seed = v["seed"].as_u64();
             }
             if let Some(arr) = v["mods"].as_array() {
                 let mut m: Vec<bool> = arr.iter().map(|b| b.as_bool().unwrap_or(false)).collect();
@@ -162,7 +163,7 @@ impl Settings {
             s.colors = c;
         }
         if let Some(n) = args.seed {
-            s.seed = n;
+            s.seed = Some(n);
         }
         s
     }
@@ -604,7 +605,11 @@ impl App {
                     self.settings.colors.to_string()
                 }
             }
-            4 => self.settings.seed.to_string(),
+            4 => self
+                .settings
+                .seed
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "random".into()),
             _ => String::new(),
         }
     }
@@ -900,10 +905,14 @@ impl App {
                 }
             }
             4 => {
-                s.seed = if up {
-                    s.seed.wrapping_add(1)
-                } else {
-                    s.seed.wrapping_sub(1)
+                s.seed = match s.seed {
+                    None => up.then_some(0),
+                    Some(0) if !up => None,
+                    Some(n) => Some(if up {
+                        n.wrapping_add(1)
+                    } else {
+                        n.wrapping_sub(1)
+                    }),
                 }
             }
             _ => {}
@@ -952,7 +961,8 @@ impl App {
         if let Some(a) = &self.actor {
             let (p, n) = self.compose();
             let s = &self.settings;
-            a.generate(p, n, s.count, s.cfg, s.steps, s.seed, s.colors);
+            let seed = s.seed.unwrap_or_else(crate::random_seed);
+            a.generate(p, n, s.count, s.cfg, s.steps, seed, s.colors);
         }
     }
 

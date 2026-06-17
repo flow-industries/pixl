@@ -248,12 +248,25 @@ fn resolve_cfg(args: &GenerateArgs) -> f32 {
     })
 }
 
+/// A fresh, well-mixed seed (time + a process counter so rapid calls differ).
+#[cfg(feature = "gen")]
+fn random_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    (nanos ^ c.wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_mul(0xD1B5_4A32_D192_ED03)
+}
+
 #[cfg(feature = "gen")]
 fn gen_params(args: &GenerateArgs) -> pixl_gen::GenParams {
     pixl_gen::GenParams {
         steps: resolve_steps(args),
         guidance: resolve_cfg(args),
-        base_seed: args.seed.unwrap_or(0),
+        base_seed: args.seed.unwrap_or_else(random_seed),
     }
 }
 
