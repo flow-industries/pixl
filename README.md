@@ -2,17 +2,23 @@
 
 [![crates.io](https://img.shields.io/crates/v/flow-pixl.svg)](https://crates.io/crates/flow-pixl)
 
-A local pixel-art generator. It generates with SDXL + a pixel-art LoRA, then snaps the result to true pixel art — a clean grid and a limited palette. Runs on Apple Silicon (Metal), NVIDIA (CUDA), or CPU.
+A local pixel-art generator. It renders with SDXL + a pixel-art LoRA, then snaps the result to
+*true* pixel art — a clean, uniform grid and a limited palette. Runs on Apple Silicon (Metal),
+NVIDIA (CUDA), or CPU, with an interactive terminal gallery for browsing and curating results.
 
-## Installation
+## Install
 
 ```bash
 cargo install flow-pixl
 ```
 
-Generation is included by default (Metal on macOS, CPU elsewhere). Use `--features cuda` for NVIDIA, or `--no-default-features` for a pixelize-only build (no GPU/ML, builds fast anywhere).
+Generation is included by default (Metal on macOS, CPU elsewhere). Build variants:
 
-Build from source:
+- `--features cuda` — NVIDIA GPUs (needs the CUDA toolkit).
+- `--no-default-features` — pixelize-only, no GPU/ML, builds fast anywhere.
+- `--no-default-features --features view` — pixelize + the interactive viewer, still no GPU.
+
+From source:
 
 ```bash
 git clone https://github.com/flow-industries/pixl.git
@@ -20,64 +26,120 @@ cd pixl
 cargo install --path crates/pixl
 ```
 
-## Usage
+## Quick start
 
 ```bash
-pixl "a cozy tavern"                         # 4 images -> ~/.pixl/<timestamp>-<prompt>/
-pixl 100 "stardew valley style house" ./out  # count + output dir
-pixl 8 "a cozy tavern" --colors 24 --low-prio
-pixl pixelize sprite.png --scale 8           # snap an existing image (no GPU)
-pixl models ls                               # inspect the model cache
+pixl                                  # open the gallery and configure everything in-app
+pixl "a cozy tavern"                  # 4 images -> ~/.pixl/<timestamp>-<prompt>/
+pixl 12 "stardew valley house"        # a count
+pixl --model sdxl --cfg 5 "a sword"   # full SDXL with classifier-free guidance
+pixl pixelize photo.png --scale 8     # snap an existing image to pixel art (no GPU)
 ```
 
-Run `pixl --help` for all options.
+In a graphics-capable terminal this opens the interactive gallery; otherwise it prints a
+headless batch and a clickable link to the output folder.
 
-## Gallery
+## The gallery
 
-In a graphics-capable terminal (Ghostty, Kitty, iTerm2) `pixl` opens an interactive gallery.
-The whole batch shows up front — queued images as a spinner placeholder, the one generating
-as a live denoise preview, and finished ones as the final pixel art — all navigable with the
-arrow keys. Flip through them with the arrow keys, mark the
-ones you like (copied to `~/.pixl/saved/`), and rerun or edit the prompt without reloading
-the model:
+In Ghostty, Kitty, or iTerm2, pixl opens an interactive gallery that shows the whole batch up
+front and updates live as images render:
 
-```
-left/right  navigate   space  save   s  settings   x  discard   r  rerun   e  edit prompt   c  cancel   q  quit
-```
+- **Queued** slots show a spinner placeholder.
+- The **generating** slot shows a live denoise preview.
+- **Finished** slots show the final pixel art.
 
-Run `pixl` with no arguments to open the gallery idle and configure everything in-app: `e`
-sets the prompt, `s` opens a settings panel (count, cfg, steps, colors, seed, and the prompt
-modifiers — ↑↓ to select, ←→ to adjust, space to toggle), and `x` discards a slot (cancelling
-it if still queued). Settings persist to `~/.pixl/config.json` between runs.
+Navigate with the arrow keys; the cursor follows the image currently rendering and holds your
+position when you step back to inspect earlier ones.
 
-Elsewhere — or when piping, with `--json`, or `--no-view` — it falls back to the headless
-batch output. Re-browse a finished run any time:
+| key | action |
+|-----|--------|
+| `←` / `→` | previous / next image |
+| `space` | save the current image to `~/.pixl/saved/` |
+| `s` | open the settings panel |
+| `x` | discard the current slot (cancels it if queued or in-flight) |
+| `r` | rerun — generate more with the current prompt |
+| `e` | edit the prompt |
+| `c` | cancel the in-flight generation |
+| `q` | quit |
+
+### Settings panel (`s`)
+
+The panel tweaks generation parameters and prompt modifiers without touching the command line:
+
+- **Parameters** — count, cfg, steps, colors, seed. `↑`/`↓` selects a row, `←`/`→` adjusts.
+- **Modifiers** — one-key toggles that fold isolation fragments onto your prompt: *single
+  subject*, *plain background*, *item icon*, *no shadow*. `space` toggles.
+
+`Enter` regenerates, `Esc` closes. Settings persist to `~/.pixl/config.json`, so the next run —
+including a bare `pixl` with no arguments — starts where you left off.
+
+### No-args mode
+
+Run `pixl` with no arguments to open the gallery idle: `e` sets a prompt, `s` configures
+parameters and modifiers, then generate. Everything is configurable in-app.
+
+### Browse a finished run
 
 ```bash
 pixl view ~/.pixl/<run>
 ```
 
-The gallery ships in the default build. For a no-GPU build that still includes it (and
-`pixl view`), use `--no-default-features --features view`.
+## Generating game sprites
 
-## Sprite assets
-
-By default pixl uses SDXL-Turbo (fast, but CFG-free, so it ignores negative prompts) plus the
-pixel-art LoRA, which leans toward busy *scenes*. For an isolated single sprite, switch to full
-SDXL so CFG and negative prompts take effect:
+By default pixl uses SDXL-Turbo (fast, few-step, CFG-free) with the pixel-art LoRA. Turbo is
+quick but ignores negative prompts and leans toward busy *scenes*. For isolated single sprites,
+switch to full SDXL so classifier-free guidance and negative prompts take effect:
 
 ```bash
-pixl --model sdxl "a wooden treasure chest" \
+pixl --model sdxl --cfg 5 "a wooden treasure chest" \
   --negative "scene, multiple objects, background, shadow"
 ```
 
-`--model sdxl` defaults to cfg 7 / 25 steps (negatives only bite at cfg > 1). Higher cfg means
-tighter prompt adherence but less variety between seeds — for a constrained subject the results
-can look near-identical; drop `--cfg` to ~4-5 for more varied takes. The seed is random by
-default (set a fixed one in the `s` settings panel for reproducible results). In the gallery,
-press `s` for the settings panel — it also carries one-key modifiers: single subject, plain background, item icon,
-no shadow — that fold isolation fragments onto your prompt (and the matching
-negatives). Toggle, press Enter, and it regenerates with the already-loaded model.
+- **Model** — `--model sdxl` (quality, negatives) vs the default `turbo` (speed).
+- **Guidance (`--cfg`)** — higher sticks closely to the prompt but reduces variety between
+  seeds; ~4-5 gives more varied takes, ~7-8 adheres tightly. Negative prompts only take effect
+  at cfg > 1 (so on SDXL, not Turbo).
+- **Isolation** — the settings-panel modifiers compose the right positive and negative
+  fragments for single-subject, plain-background sprites.
+- **Seed** — random by default (each run differs); pin a value in the settings panel for
+  reproducible results.
+
+## Commands & flags
+
+`pixl [COUNT] [PROMPT] [OUT_DIR]` is the default (generate) form; `pixl gen` is the explicit
+alias.
+
+| flag | default | description |
+|------|---------|-------------|
+| `--model turbo\|sdxl` | turbo | base model |
+| `--cfg <f>` | 1 (turbo) / 7 (sdxl) | classifier-free guidance |
+| `--steps <n>` | 8 (turbo) / 25 (sdxl) | diffusion steps |
+| `--seed <n>` | random | base seed (omit for random) |
+| `-c, --colors <n>` | 16 | palette size (0 = keep all distinct cell colors) |
+| `--size <WxH>` | 512x512 | generation resolution (multiple of 8) |
+| `--negative <text>` | — | negative prompt (SDXL / cfg > 1) |
+| `--no-lora` | off | disable the pixel-art LoRA |
+| `--no-postprocess` | off | skip the pixelize pass, save the raw render |
+| `--no-view` | off | force the headless batch output |
+| `--saved-dir <path>` | `~/.pixl/saved` | where saved favorites are copied |
+| `-j, --jobs <n>` | auto | pixelize/save worker threads |
+| `--json` | off | emit one JSON line per finished image |
+| `--low-prio` | off | run at low priority (macOS background QoS) |
+
+Other subcommands:
+
+- `pixl pixelize <img>... [-o out] [--scale n] [-c colors]` — snap existing images to true
+  pixel art. No GPU or model needed (works in every build).
+- `pixl view <dir>` — browse a directory of images in the gallery.
+- `pixl models ls | path | clear` — inspect or clear the local model / merge cache.
+
+## How it works
+
+pixl renders with SDXL (via [candle](https://github.com/huggingface/candle)) plus the
+`nerijs/pixel-art-xl` LoRA merged into the UNet, then runs a GPU-free pixelize pass: it detects
+the pixel grid (per-axis edge-energy folding, with square cells), collapses each cell to its
+dominant color, and quantizes to a limited Lab-space palette. Model weights download once from
+Hugging Face and cache locally — `pixl models ls` shows where.
 
 ## License
 
