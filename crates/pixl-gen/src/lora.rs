@@ -88,14 +88,13 @@ pub fn map_module(kohya: &str) -> Option<String> {
             envelope("output_blocks", n.parse().ok()?, sub.parse().ok()?)?,
             inner,
         )
-    } else if let Some(r) = m.strip_prefix("middle_block_") {
+    } else {
+        let r = m.strip_prefix("middle_block_")?;
         let (sub, inner) = r.split_once('_')?;
         if sub != "1" {
             return None;
         }
         ("mid_block.attentions.0", inner)
-    } else {
-        return None;
     };
     Some(format!("{env}.{}.weight", convert_inner(inner)?))
 }
