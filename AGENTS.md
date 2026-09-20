@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to agents working with code in this repository. `CLAUDE.md` is a symlink to it.
+This file provides guidance to agents working with code in this repository.
 
 ## What this is
 
